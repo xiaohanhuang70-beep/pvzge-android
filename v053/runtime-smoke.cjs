@@ -14,7 +14,9 @@ const {chromium}=require('playwright');const fs=require('node:fs');const {spawn}
   page.on('pageerror',e=>report.errors.push(String(e)));page.on('console',m=>{if(m.type()==='error')report.errors.push(m.text().slice(0,400));});
   await page.addInitScript({path:__dirname+'/ge-mobile-input.js'});
   await page.goto('http://127.0.0.1:8765/',{waitUntil:'domcontentloaded',timeout:30000});
-  await page.waitForFunction(async()=>{try{const cc=await window.System?.import('cc');return cc?.director?.getScene?.()?.name==='mainScene';}catch(_){return false;}},{},{timeout:150000});
+  await page.waitForFunction(()=>!!window.System?.import&&!!document.getElementById('GameCanvas'),{},{timeout:150000});
+  await page.evaluate(async()=>{window.__GE_TEST_CC__=await System.import('cc');});
+  await page.waitForFunction(()=>window.__GE_TEST_CC__.director.getScene()?.name==='mainScene',{},{timeout:150000});
   check('Actual game mainScene boot',true);
   const cdp=await context.newCDPSession(page);
   async function gesture(points){
@@ -24,7 +26,7 @@ const {chromium}=require('playwright');const fs=require('node:fs');const {spawn}
   }
   async function scene(name,api){
    await page.evaluate(async api=>{const k=System.get('chunks:///_virtual/KeyListener.ts').KeyListener;await k[api]();},api);
-   await page.waitForFunction(async name=>(await System.import('cc')).director.getScene()?.name===name,name,{timeout:90000});
+   await page.waitForFunction(name=>window.__GE_TEST_CC__.director.getScene()?.name===name,name,{timeout:90000});
   }
   // Translate actual UI world coordinates using Cocos view's own scale/viewport.
   async function location(kind){return page.evaluate(async kind=>{
@@ -58,7 +60,7 @@ const {chromium}=require('playwright');const fs=require('node:fs');const {spawn}
   await page.screenshot({path:out+'/runtime-settings.png'});
   await page.evaluate(()=>{const a=System.get('chunks:///_virtual/PlayerProperties.ts').AllPlayerProperties;a.getTutorialProps().zengarden_intro=true;});
   await scene('zenGardenScene','GoToZenGarden');
-  await page.waitForFunction(async()=>{const cc=await System.import('cc'),g=System.get('chunks:///_virtual/zenGardenScene.ts')?.zenGardenScene?.component;return g?.currentZen?.initialized&&g.shovelUI?.node?.hasEventListener(cc.Node.EventType.MOUSE_DOWN);},{},{timeout:90000});
+  await page.waitForFunction(()=>{const cc=window.__GE_TEST_CC__,g=System.get('chunks:///_virtual/zenGardenScene.ts')?.zenGardenScene?.component;return g?.currentZen?.initialized&&g.shovelUI?.node?.hasEventListener(cc.Node.EventType.MOUSE_DOWN);},{},{timeout:90000});
   for(const tool of ['shovel','glove','cart']){
    const p=await location(tool);await page.touchscreen.tap(p.x,p.y);await page.waitForTimeout(400);
    const state=await page.evaluate(()=>{const g=System.get('chunks:///_virtual/zenGardenScene.ts').zenGardenScene.component;return {shovel:g.isShoveling,glove:g.isGloving,cart:g.isCarting};});
