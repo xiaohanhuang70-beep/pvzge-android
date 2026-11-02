@@ -1,0 +1,235 @@
+name: GE Fullscreen + Touch Fix - Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+      - name: Checkout original v0.16.1 source (only app source)
+        run: |
+          git fetch --depth 1 https://github.com/MrPurple666/pvzge-android.git refs/tags/v0.16.1
+          git checkout --detach FETCH_HEAD
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Setup Android SDK
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Patch full screen and touch controls
+        shell: bash
+        run: |
+          cat > /tmp/ge_patch.py <<'PYFIX'
+          #!/usr/bin/env python3
+          """PvZ2 GE v0.16.1: experimental safe fullscreen compatibility patch.
+
+          Only edits Android wrapper sources and keeps all upstream game resources intact.
+          This script fails fast if expected source blocks are missing or unexpectedly changed.
+          """
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+
+
+          def modify(relpath: str, changes: list[tuple[str, str]]) -> None:
+              path = ROOT / relpath
+              if not path.is_file():
+                  raise SystemExit(f"Missing expected source: {relpath}")
+              src = path.read_text(encoding="utf-8")
+              for index, (original, replacement) in enumerate(changes, 1):
+                  count = src.count(original)
+                  if count != 1:
+                      raise SystemExit(
+                          f"Refusing to patch {relpath}: replacement {index} matched {count} times; expected 1. "
+                          "Use exactly the original MrPurple666 v0.16.1 tag."
+                      )
+                  src = src.replace(original, replacement, 1)
+              path.write_text(src, encoding="utf-8")
+              print(f"Patched {relpath}")
+
+
+          modify(
+              "app/src/main/java/com/pvzge/gardendless/AspectRatioFrameLayout.kt",
+              [
+                  (
+                      """        if (!fullscreen) {
+                      when {
+                          screenWidth * MAX_ASPECT_H > screenHeight * MAX_ASPECT_W -> {
+                              targetWidth = screenHeight * MAX_ASPECT_W / MAX_ASPECT_H
+                          }
+                          screenWidth * MIN_ASPECT_H < screenHeight * MIN_ASPECT_W -> {
+                              targetHeight = screenWidth * MIN_ASPECT_H / MIN_ASPECT_W
+                          }
+
+                      }
+                  }""",
+                      """        // Always keep the WebView's measured size stable during fullscreen changes.
+                  // The previous implementation remeasured the Cocos canvas to the phone's
+                  // extra-wide aspect ratio, which can stall some Android WebView renderers.
+                  when {
+                      screenWidth * MAX_ASPECT_H > screenHeight * MAX_ASPECT_W -> {
+                          targetWidth = screenHeight * MAX_ASPECT_W / MAX_ASPECT_H
+                      }
+                      screenWidth * MIN_ASPECT_H < screenHeight * MIN_ASPECT_W -> {
+                          targetHeight = screenWidth * MIN_ASPECT_H / MIN_ASPECT_W
+                      }
+                  }""",
+                  ),
+                  (
+                      """        child.scaleX = if (renderSize[0] > 0) targetWidth.toFloat() / renderSize[0] else 1f
+                  child.scaleY = if (renderSize[1] > 0) targetHeight.toFloat() / renderSize[1] else 1f""",
+                      """        // Only the presentation scale changes: no WebView/canvas resize on toggle.
+                  // Fullscreen fills the panel (which may slightly stretch on very wide phones).
+                  val displayWidth = if (fullscreen) screenWidth else targetWidth
+                  val displayHeight = if (fullscreen) screenHeight else targetHeight
+                  child.scaleX = if (renderSize[0] > 0) displayWidth.toFloat() / renderSize[0] else 1f
+                  child.scaleY = if (renderSize[1] > 0) displayHeight.toFloat() / renderSize[1] else 1f""",
+                  ),
+              ],
+          )
+
+          modify(
+              "app/src/main/java/com/pvzge/gardendless/GameActivity.kt",
+              [
+                  (
+                      """    private var fullscreenCallback: CustomViewCallback? = null
+          """,
+                      """    // Fullscreen is handled by the existing WebView container, not by a detached HTML5 view.
+          """,
+                  ),
+                  (
+                      """            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                          if (fullscreenCallback != null) {
+                              callback.onCustomViewHidden()
+                              return
+                          }
+                          fullscreenCallback = callback
+                          setWebviewFullscreen(true)
+                      }
+
+                      override fun onHideCustomView() {
+                          val callback = fullscreenCallback ?: return
+                          fullscreenCallback = null
+                          callback.onCustomViewHidden()
+                          setWebviewFullscreen(false)
+                      }""",
+                      """            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                          // Never leave the original WebView hidden behind a custom fullscreen
+                          // surface that the Activity does not attach to the window.
+                          callback.onCustomViewHidden()
+                          setWebviewFullscreen(true)
+                      }
+
+                      override fun onHideCustomView() {
+                          // HTML5 fullscreen was declined; the app's own bridge handles exit.
+                      }""",
+                  ),
+                  (
+                      """        fullscreenCallback?.onCustomViewHidden()
+                  fullscreenCallback = null
+          """,
+                      "",
+                  ),
+                  (
+                      """    var req = ep.requestFullscreen || ep.webkitRequestFullscreen || ep.webkitRequestFullScreen;
+              if (req) {
+                  ep.requestFullscreen = function() { setFullscreen(true); return req.apply(this, arguments); };
+              }
+              var dp = Document.prototype;
+              var exit = dp.exitFullscreen || dp.webkitExitFullscreen || dp.webkitCancelFullScreen;
+              if (exit) {
+                  dp.exitFullscreen = function() { setFullscreen(false); return exit.apply(this, arguments); };
+              }""",
+                      """    // Intercept native HTML5 fullscreen: WebView expects a separately mounted
+              // custom view; this app uses its own non-detaching fullscreen container.
+              var req = ep.requestFullscreen || ep.webkitRequestFullscreen || ep.webkitRequestFullScreen;
+              if (req) {
+                  var safeRequest = function() { setFullscreen(true); return Promise.resolve(); };
+                  ep.requestFullscreen = safeRequest;
+                  if (ep.webkitRequestFullscreen) ep.webkitRequestFullscreen = safeRequest;
+                  if (ep.webkitRequestFullScreen) ep.webkitRequestFullScreen = safeRequest;
+              }
+              var dp = Document.prototype;
+              var exit = dp.exitFullscreen || dp.webkitExitFullscreen || dp.webkitCancelFullScreen;
+              if (exit) {
+                  var safeExit = function() { setFullscreen(false); return Promise.resolve(); };
+                  dp.exitFullscreen = safeExit;
+                  if (dp.webkitExitFullscreen) dp.webkitExitFullscreen = safeExit;
+                  if (dp.webkitCancelFullScreen) dp.webkitCancelFullScreen = safeExit;
+              }""",
+                  ),
+              ],
+          )
+
+          # Make a standalone debug app so the test cannot overwrite the user's original
+          # release-signed installation (or its save data). The app's update checker must
+          # not be used to replace this test installation.
+          modify(
+              "app/build.gradle.kts",
+              [
+                  (
+                      """    buildTypes {
+                  release {""",
+                      """    buildTypes {
+                  debug {
+                      applicationIdSuffix = ".fullscreenfix"
+                  }
+                  release {""",
+                  ),
+              ],
+          )
+          modify(
+              "app/src/main/AndroidManifest.xml",
+              [
+                  ('android:label="@string/app_name"', 'android:label="GE 全屏修复测试版"'),
+              ],
+          )
+          print("Patch applied. Build the independent debug APK with ./gradlew assembleDebug.")
+
+
+          # Replace the legacy mixed-coordinate mouse adapter with a touch-first one.
+          touch_path = ROOT / "app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt"
+          touch_src = touch_path.read_text(encoding="utf-8")
+          if not ("class MouseGameWebView" in touch_src and "injectJsMouseEvent" in touch_src
+                  and "injectMouseEventAt" in touch_src):
+              raise SystemExit("Unexpected touch source: refusing to overwrite a different implementation")
+          touch_path.write_text('// PvZ2 Gardendless Android — touch-first gesture adapter, experimental\n// Derived from MrPurple666/pvzge-android (GPL-3.0).\npackage com.pvzge.gardendless\n\nimport android.content.Context\nimport android.os.Handler\nimport android.os.Looper\nimport android.util.AttributeSet\nimport android.view.InputDevice\nimport android.view.MotionEvent\nimport android.view.ViewConfiguration\nimport android.webkit.WebView\nimport kotlin.math.hypot\n\n/**\n * Touch-first control scheme:\n * - short tap: one left-click (select/plant/collect)\n * - one finger moving beyond touch slop: left-button drag from touch-down position\n * - hold still: right-click, WITHOUT triggering a left-click first\n * - two-finger tap: right-click\n * - two-finger swipe: vertical/horizontal mouse wheel\n *\n * Unlike the original class, this never mixes CSS-coordinate JS mouse presses with\n * native-coordinate mouse moves, or forwards a second native touch click to WebView.\n */\nclass MouseGameWebView @JvmOverloads constructor(\n    context: Context, attrs: AttributeSet? = null\n) : WebView(context, attrs) {\n    private enum class Gesture { IDLE, PENDING, DRAGGING, LONG_PRESSED, TWO_FINGER }\n    private var gesture = Gesture.IDLE\n    private val mainHandler = Handler(Looper.getMainLooper())\n    private val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat().coerceAtLeast(8f)\n    private val density = context.resources.displayMetrics.density\n    private val longPressMs = 520L\n    private val moveIntervalMs = 16L\n    private var pointerId = MotionEvent.INVALID_POINTER_ID\n    private var downX = 0f\n    private var downY = 0f\n    private var lastX = 0f\n    private var lastY = 0f\n    private var lastMoveTime = 0L\n    private var lastCenterX = 0f\n    private var lastCenterY = 0f\n    private var startCenterX = 0f\n    private var startCenterY = 0f\n    private var scrollMoved = false\n\n    private val longPressJob = Runnable {\n        if (gesture == Gesture.PENDING) {\n            gesture = Gesture.LONG_PRESSED\n            dispatchPointer("right", downX, downY)\n        }\n    }\n\n    override fun dispatchTouchEvent(event: MotionEvent): Boolean {\n        // Preserve real mouse and trackpad input rather than treating it as touch.\n        if ((event.source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) {\n            return super.dispatchTouchEvent(event)\n        }\n        when (event.actionMasked) {\n            MotionEvent.ACTION_DOWN -> {\n                clearGesture()\n                pointerId = event.getPointerId(0)\n                downX = event.x\n                downY = event.y\n                lastX = downX\n                lastY = downY\n                gesture = Gesture.PENDING\n                mainHandler.postDelayed(longPressJob, longPressMs)\n            }\n            MotionEvent.ACTION_POINTER_DOWN -> {\n                if (event.pointerCount >= 2) {\n                    mainHandler.removeCallbacks(longPressJob)\n                    if (gesture == Gesture.DRAGGING) {\n                        dispatchPointer("up", lastX, lastY)\n                    }\n                    gesture = Gesture.TWO_FINGER\n                    val cx = (event.getX(0) + event.getX(1)) / 2f\n                    val cy = (event.getY(0) + event.getY(1)) / 2f\n                    startCenterX = cx\n                    startCenterY = cy\n                    lastCenterX = cx\n                    lastCenterY = cy\n                    scrollMoved = false\n                }\n            }\n            MotionEvent.ACTION_MOVE -> {\n                if (gesture == Gesture.TWO_FINGER && event.pointerCount >= 2) {\n                    val cx = (event.getX(0) + event.getX(1)) / 2f\n                    val cy = (event.getY(0) + event.getY(1)) / 2f\n                    if (!scrollMoved && hypot(cx - startCenterX, cy - startCenterY) >= slop * 1.7f) {\n                        scrollMoved = true\n                    }\n                    if (scrollMoved) {\n                        injectScroll(cx, cy, cx - lastCenterX, cy - lastCenterY)\n                    }\n                    lastCenterX = cx\n                    lastCenterY = cy\n                } else if (event.pointerCount == 1 &&\n                    (gesture == Gesture.PENDING || gesture == Gesture.DRAGGING)) {\n                    val index = event.findPointerIndex(pointerId).takeIf { it >= 0 } ?: 0\n                    val x = event.getX(index)\n                    val y = event.getY(index)\n                    lastX = x\n                    lastY = y\n                    if (gesture == Gesture.PENDING && hypot(x - downX, y - downY) >= slop) {\n                        mainHandler.removeCallbacks(longPressJob)\n                        // Press at the actual starting point: drag the chosen seed onto the lawn.\n                        dispatchPointer("down", downX, downY)\n                        gesture = Gesture.DRAGGING\n                        dispatchPointer("move", x, y)\n                        lastMoveTime = event.eventTime\n                    } else if (gesture == Gesture.DRAGGING && event.eventTime - lastMoveTime >= moveIntervalMs) {\n                        dispatchPointer("move", x, y)\n                        lastMoveTime = event.eventTime\n                    }\n                }\n            }\n            MotionEvent.ACTION_POINTER_UP -> {\n                // Do not reinterpret the remaining finger as a new single-finger tap.\n            }\n            MotionEvent.ACTION_UP -> {\n                when (gesture) {\n                    Gesture.PENDING -> dispatchPointer("click", event.x, event.y)\n                    Gesture.DRAGGING -> {\n                        // Flush the last position even if move events were coalesced.\n                        dispatchPointer("move", event.x, event.y)\n                        dispatchPointer("up", event.x, event.y)\n                    }\n                    Gesture.TWO_FINGER -> if (!scrollMoved) {\n                        dispatchPointer("right", lastCenterX, lastCenterY)\n                    }\n                    else -> Unit\n                }\n                clearGesture()\n            }\n            MotionEvent.ACTION_CANCEL -> {\n                if (gesture == Gesture.DRAGGING) dispatchPointer("up", lastX, lastY)\n                clearGesture()\n            }\n        }\n        return true\n    }\n\n    private fun clearGesture() {\n        mainHandler.removeCallbacks(longPressJob)\n        gesture = Gesture.IDLE\n        pointerId = MotionEvent.INVALID_POINTER_ID\n        scrollMoved = false\n    }\n\n    override fun onDetachedFromWindow() {\n        mainHandler.removeCallbacks(longPressJob)\n        super.onDetachedFromWindow()\n    }\n\n    private fun dispatchPointer(type: String, x: Float, y: Float) {\n        val w = width\n        val h = height\n        if (w <= 0 || h <= 0) return\n        // Fractions are robust to Android density, Original/Balanced resolution,\n        // WebView scale and asymmetric letterboxing; JS maps into the CSS viewport.\n        val fx = (x / w).coerceIn(0f, 1f)\n        val fy = (y / h).coerceIn(0f, 1f)\n        evaluateJavascript("window.GEAndroidTouch && window.GEAndroidTouch.pointer(\'$type\',$fx,$fy);", null)\n    }\n\n    private fun injectScroll(x: Float, y: Float, dx: Float, dy: Float) {\n        val props = arrayOf(MotionEvent.PointerProperties().apply {\n            id = 0\n            toolType = MotionEvent.TOOL_TYPE_MOUSE\n        })\n        val coords = arrayOf(MotionEvent.PointerCoords().apply {\n            this.x = x\n            this.y = y\n            setAxisValue(MotionEvent.AXIS_HSCROLL, dx / (24f * density))\n            setAxisValue(MotionEvent.AXIS_VSCROLL, dy / (24f * density))\n        })\n        val now = android.os.SystemClock.uptimeMillis()\n        val wheel = MotionEvent.obtain(\n            now, now, MotionEvent.ACTION_SCROLL, 1, props, coords,\n            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0\n        )\n        try {\n            super.dispatchGenericMotionEvent(wheel)\n        } finally {\n            wheel.recycle()\n        }\n    }\n}\n', encoding="utf-8")
+          print("Patched touch input class")
+
+          modify("app/src/main/java/com/pvzge/gardendless/GameActivity.kt", [
+              ('performanceScript + gameBridgeHookJs + "</script>"',
+               'performanceScript + gameBridgeHookJs + androidTouchHookJs + "</script>"'),
+              ('    private val gameBridgeHookJs = """',
+               '    private val androidTouchHookJs = """\n' + "(function() {\n    if (window.GEAndroidTouch) return;\n    var canvas = function() { return document.getElementById('GameCanvas'); };\n    function cssPosition(nx, ny) {\n        var v = window.visualViewport;\n        var w = (v && v.width) || window.innerWidth;\n        var h = (v && v.height) || window.innerHeight;\n        var ox = (v && v.offsetLeft) || 0;\n        var oy = (v && v.offsetTop) || 0;\n        return [ox + nx * w, oy + ny * h];\n    }\n    function mouse(type, x, y, button, buttons) {\n        var target = canvas() || document.elementFromPoint(x, y);\n        if (!target) return;\n        target.dispatchEvent(new MouseEvent(type, {\n            view: window, bubbles: true, cancelable: true,\n            clientX: x, clientY: y, screenX: x, screenY: y,\n            button: button, buttons: buttons\n        }));\n    }\n    window.GEAndroidTouch = {\n        pointer: function(type, nx, ny) {\n            var p = cssPosition(nx, ny), x = p[0], y = p[1];\n            switch (type) {\n                case 'click':\n                    mouse('mousedown', x, y, 0, 1);\n                    mouse('mouseup', x, y, 0, 0);\n                    break;\n                case 'down': mouse('mousedown', x, y, 0, 1); break;\n                case 'move': mouse('mousemove', x, y, 0, 1); break;\n                case 'up': mouse('mouseup', x, y, 0, 0); break;\n                case 'right':\n                    mouse('mousedown', x, y, 2, 2);\n                    mouse('mouseup', x, y, 2, 0);\n                    break;\n            }\n        }\n    };\n})();" + '\n    """.trimIndent()\n\n    private val gameBridgeHookJs = """'),
+              ('        checkForAppUpdate()','        // No upstream updater in this experimental standalone build.\n        // checkForAppUpdate()')
+          ])
+          print("Touch-first experimental Android patch applied")
+          PYFIX
+          python3 /tmp/ge_patch.py
+      - name: Download game assets
+        run: |
+          git clone --depth 1 https://github.com/Gzh0821/pvzge_web.git ../pvzge_web
+          test -f ../pvzge_web/docs/index.html
+      - name: Compile experimental APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          test -s app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload APK (download on phone)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GE-Fullscreen-Touch-Test-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          compression-level: 0
+          retention-days: 5
+          if-no-files-found: error
