@@ -42,10 +42,27 @@
   // Overlays take precedence even when paused over an inGameScene.
   const settings=scene&&findComponent(scene,/^SettingWindow$/i);
   if(settings)return {kind:'settings',scene,name,nativeScroll:!!settings.scrollView&&settings.scrollView.enabled!==false};
-  if(/^worldMapScene$/i.test(name)&&findComponent(scene,/^WorldMapChooser$/i))return {kind:'chooser',scene,name};
+  const chooser=/^worldMapScene$/i.test(name)&&findComponent(scene,/^WorldMapChooser$/i);
+  if(chooser)return {kind:'chooser',scene,name,chooser};
   return {kind:/^inGameScene$/i.test(name)?'battle':/^zenGardenScene$/i.test(name)?'garden':'other',scene,name};
  }
  function sameScene(s){const now=mode();return s.scene===now.scene&&s.name===now.name&&s.kind===now.kind;}
+ function narrative(){
+  const npc=module('NPC_Controller')?.npc_controller;
+  if(!npc?.CurrentFlow?.length)return null;
+  return {npc,flow:npc.CurrentFlow,step:npc.CurrentFlowStep,talking:!!npc.CurrentNPC&&!!npc.CurrentFlow[npc.CurrentFlowStep-1]?.Lines};
+ }
+ async function finishNarrative(s,token){
+  if(!s.story)return;
+  await frame();if(token!==generation||!sameScene(s))return;
+  const now=narrative(),before=s.story;
+  if(now&&now.npc===before.npc&&now.flow===before.flow&&now.step===before.step){
+   // Original RunFlow owns animation/unskippable guards. Only compensate for
+   // an unchanged state after native touch and the normal mouse route ran.
+   now.npc.RunFlow();
+   if(now.npc.CurrentFlowStep!==before.step)console.info('[GE v053] confirmed narrative fallback',before.step,now.npc.CurrentFlowStep);
+  }
+ }
  function engine(){
   const ui=module('UI')?.UIInGame?.component,cell=module('Mouse')?.Mouse?.mouseInLnC;
   if(!ui||!ui.gameStarted||ui.paused)return null;
@@ -99,7 +116,12 @@
   if(multi){e.stopPropagation?.();if(type==='touchmove')moveMulti(e);if(type==='touchend'&&e.touches.length===0)abort();return;}
   if(type==='touchstart'){
    if(primary||e.touches.length!==1)return;
-   const t=e.changedTouches[0],p=point(t),s={...mode(),id:t.identifier,first:p,last:p,moved:false,before:null,selected:null};primary=s;
+   const t=e.changedTouches[0],p=point(t),s={...mode(),id:t.identifier,first:p,last:p,moved:false,before:null,selected:null,story:narrative()};s.chooserStartIndex=s.chooser?.currentI;primary=s;
+   if(s.story?.talking&&s.kind!=='settings'&&s.kind!=='battle'){
+    // A visible narrative line is a modal tap target. Native world-card TOUCH_END
+    // must not arm entering while the game's isBusy guard rejects that entry.
+    cancelNative(e.touches);e.stopPropagation?.();s.consumeNative=true;
+   }
    // Menus use a completed tap: a swipe/multi-touch must not trigger NPC or tools.
    // Battle starts on press to retain card selection and pointer following.
    if(s.kind==='battle'){
@@ -117,6 +139,7 @@
    if(s.kind==='chooser'&&Math.abs(p.x-s.first.x)>=24){
     if(!s.consumeNative){cancelNative(e.touches);s.consumeNative=true;}
     e.stopPropagation?.();mouse('mousemove',p);
+    if(!narrative())s.chooserSwipe=true;
    }else if(s.kind==='settings'){
     // In the shipped settings, native drag did not change ScrollView offset.
     // Once vertical intent is clear, cancel native UI press before wheel fallback.
@@ -130,7 +153,11 @@
    return;
   }
   if(type==='touchend'){
-   if(s.kind==='battle'){
+   if(s.story?.talking&&s.kind!=='settings'&&s.kind!=='battle'&&!s.moved){
+    // The real dialogue controller is the modal action; no simulated world-card
+    // click may follow it. Its own RunFlow guards control whether it advances.
+    later(token=>finishNarrative(s,token),true);
+   }else if(s.kind==='battle'){
     later(()=>{if(sameScene(s)){heldPoint=p;mouse('mousemove',p,0,held?1:0);}});
     later(async token=>{
      if(!sameScene(s))return;
@@ -142,13 +169,17 @@
       if(token===generation){mouse('mouseup',p);held=false;heldPoint=null;}
      }
     },true);
-   }else if(s.kind==='chooser'&&s.consumeNative){
-    // WorldMapChooser listens only to wheel and changes one world per event.
-    wheel(p,0,-Math.sign(p.x-s.first.x)*120);
+   }else if(s.kind==='chooser'&&s.chooserSwipe&&!narrative()&&s.chooser.currentI===s.chooserStartIndex){
+    // Observe the actual index; compensate only if DOM wheel hit-testing missed.
+    const chooser=s.chooser,before=chooser.currentI,direction=-Math.sign(p.x-s.first.x);
+    wheel(p,0,direction*120);
+    later(()=>{if(sameScene(s)&&mode().chooser===chooser&&!narrative()&&!chooser.entering&&Number.isFinite(before)&&chooser.currentI===before){
+     chooser.moveBy(direction);console.info('[GE v053] chooser fallback',before,chooser.currentI);
+    }},true);
    }else if(s.kind!=='settings'&&!s.moved){
     later(()=>{if(sameScene(s))mouse('mousemove',p);});
     later(()=>{if(sameScene(s)){held=true;heldPoint=p;mouse('mousedown',p,0,1);}},true);
-    later(()=>{if(sameScene(s)){mouse('mouseup',p);held=false;heldPoint=null;}},true);
+    later(async token=>{if(sameScene(s)){mouse('mouseup',p);held=false;heldPoint=null;await finishNarrative(s,token);}},true);
    }
    primary=null;
   }

@@ -56,3 +56,30 @@ test('world chooser horizontal swipe switches once and cancels native end activa
 test('desktop-only menu hover receives position without a premature press',async()=>{
  const s=env('StoreScene');await s.flush();s.fire('touchstart',one(100,90));s.fire('touchmove',one(140,90));assert.deepEqual(mouse(s).map(e=>[e.type,e.clientX]),[['mousemove',100],['mousemove',140]]);
 });
+
+test('unhandled dialogue tap advances actual controller state as a guarded fallback',async()=>{
+ const npc={CurrentFlow:[{Action:'TALK'}],CurrentFlowStep:0,RunFlow(){this.CurrentFlowStep++;}};
+ const s=env('worldMapScene',{npc});await s.flush();tap(s);await s.flush();assert.equal(npc.CurrentFlowStep,1);
+});
+test('native or mouse dialogue progression cannot be advanced a second time by fallback',async()=>{
+ const npc={CurrentFlow:[{Action:'TALK'}],CurrentFlowStep:0,RunFlow(){this.CurrentFlowStep++;}};
+ const s=env('worldMapScene',{npc,onMouse(e){if(e.type==='mousedown')npc.RunFlow();}});await s.flush();tap(s);await s.flush();assert.equal(npc.CurrentFlowStep,1);
+});
+test('world chooser falls back to its real movement API only if wheel leaves index unchanged',async()=>{
+ const s=env('worldMapScene',{chooser:true});await s.flush();s.fire('touchstart',one(300,200));s.fire('touchmove',one(260,200));s.fire('touchend',[],one(200,200));await s.flush();assert.equal(s.chooser.currentI,1);
+});
+test('world chooser successful wheel route is never duplicated by state fallback',async()=>{
+ const s=env('worldMapScene',{chooser:true,onMouse(e,{chooser}){if(e.type==='wheel')chooser.moveBy(1);}});await s.flush();s.fire('touchstart',one(300,200));s.fire('touchmove',one(260,200));s.fire('touchend',[],one(200,200));await s.flush();assert.equal(s.chooser.currentI,1);
+});
+test('world swipe does not switch during active narrative',async()=>{
+ const npc={CurrentFlow:[{}],CurrentFlowStep:0,RunFlow(){throw Error('swipe must not progress narrative');}};
+ const s=env('worldMapScene',{chooser:true,npc});await s.flush();s.fire('touchstart',one(300,200));s.fire('touchmove',one(260,200));s.fire('touchend',[],one(200,200));await s.flush();assert.equal(s.chooser.currentI,0);
+});
+test('visible narrative line cannot arm native or simulated world entry',async()=>{
+ const npc={CurrentFlow:[{Lines:'a real line'},{Lines:'next'}],CurrentFlowStep:1,CurrentNPC:{},RunFlow(){this.CurrentFlowStep++;}};
+ const s=env('worldMapScene',{chooser:true,npc,onMouse(e,{chooser}){if(e.type==='mouseup')chooser.entering=true;}});await s.flush();tap(s);await s.flush();
+ assert.equal(npc.CurrentFlowStep,2);assert.equal(s.chooser.entering,false);assert.equal(mouse(s).filter(e=>e.type==='mousedown').length,0);assert.ok(s.stops()>0);
+});
+test('world swipe does not repeat a selection already changed by native start',async()=>{
+ let initial=true;const s=env('worldMapScene',{chooser:true,onMouse(e,{chooser}){if(e.type==='mousemove'&&initial){initial=false;chooser.moveBy(1);}}});await s.flush();s.fire('touchstart',one(300,200));s.fire('touchmove',one(260,200));s.fire('touchend',[],one(200,200));await s.flush();assert.equal(s.chooser.currentI,1);
+});
