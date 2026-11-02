@@ -218,12 +218,28 @@ jobs:
           python3 /tmp/ge_patch.py
       - name: Download game assets
         run: |
-          git clone --depth 1 https://github.com/Gzh0821/pvzge_web.git ../pvzge_web
-          test -f ../pvzge_web/docs/index.html
+          # Reuse the exact upstream v0.16.1 bundle while its source repository is unavailable.
+          curl --fail --location --retry 3 --output /tmp/ge-original.apk https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.1/app-release.apk
+          echo "d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35  /tmp/ge-original.apk" | sha256sum --check
+          python3 - <<'PYASSETS'
+          from pathlib import Path
+          import shutil, zipfile
+          target = Path("app/src/main/assets/pvzge_web.zip")
+          target.parent.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile("/tmp/ge-original.apk") as apk:
+              with apk.open("assets/pvzge_web.zip") as source, target.open("wb") as dest:
+                  shutil.copyfileobj(source, dest)
+          with zipfile.ZipFile(target) as bundle:
+              names = bundle.namelist()
+              assert "index.html" in names, "Game entry point missing"
+              assert any(name.startswith("assets/") for name in names), "Game resources missing"
+              print(f"Recovered original v0.16.1 game bundle: {target.stat().st_size} bytes, {len(names)} entries")
+          PYASSETS
+          rm /tmp/ge-original.apk
       - name: Compile experimental APK
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug -x createGameZip --no-daemon --stacktrace
           test -s app/build/outputs/apk/debug/app-debug.apk
       - name: Upload APK (download on phone)
         uses: actions/upload-artifact@v4
