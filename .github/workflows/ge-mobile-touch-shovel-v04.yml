@@ -1,0 +1,613 @@
+name: GE Mobile Touch + Shovel + Proportional Fullscreen v0.4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+      - name: Checkout original v0.16.1 source (only app source)
+        run: |
+          git fetch --depth 1 https://github.com/MrPurple666/pvzge-android.git refs/tags/v0.16.1
+          git checkout --detach FETCH_HEAD
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Setup Android SDK
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Patch full screen and touch controls
+        shell: bash
+        run: |
+          cat > /tmp/ge_patch.py <<'PYFIX'
+          #!/usr/bin/env python3
+          """PvZ2 GE v0.16.1: experimental safe fullscreen compatibility patch.
+
+          Only edits Android wrapper sources and keeps all upstream game resources intact.
+          This script fails fast if expected source blocks are missing or unexpectedly changed.
+          """
+          from pathlib import Path
+
+          ROOT = Path.cwd()
+
+
+          def modify(relpath: str, changes: list[tuple[str, str]]) -> None:
+              path = ROOT / relpath
+              if not path.is_file():
+                  raise SystemExit(f"Missing expected source: {relpath}")
+              src = path.read_text(encoding="utf-8")
+              for index, (original, replacement) in enumerate(changes, 1):
+                  count = src.count(original)
+                  if count != 1:
+                      raise SystemExit(
+                          f"Refusing to patch {relpath}: replacement {index} matched {count} times; expected 1. "
+                          "Use exactly the original MrPurple666 v0.16.1 tag."
+                      )
+                  src = src.replace(original, replacement, 1)
+              path.write_text(src, encoding="utf-8")
+              print(f"Patched {relpath}")
+
+
+          modify(
+              "app/src/main/java/com/pvzge/gardendless/AspectRatioFrameLayout.kt",
+              [
+                  (
+                      """        if (!fullscreen) {
+                      when {
+                          screenWidth * MAX_ASPECT_H > screenHeight * MAX_ASPECT_W -> {
+                              targetWidth = screenHeight * MAX_ASPECT_W / MAX_ASPECT_H
+                          }
+                          screenWidth * MIN_ASPECT_H < screenHeight * MIN_ASPECT_W -> {
+                              targetHeight = screenWidth * MIN_ASPECT_H / MIN_ASPECT_W
+                          }
+
+                      }
+                  }""",
+                      """        // Always keep the WebView's measured size stable during fullscreen changes.
+                  // The previous implementation remeasured the Cocos canvas to the phone's
+                  // extra-wide aspect ratio, which can stall some Android WebView renderers.
+                  when {
+                      screenWidth * MAX_ASPECT_H > screenHeight * MAX_ASPECT_W -> {
+                          targetWidth = screenHeight * MAX_ASPECT_W / MAX_ASPECT_H
+                      }
+                      screenWidth * MIN_ASPECT_H < screenHeight * MIN_ASPECT_W -> {
+                          targetHeight = screenWidth * MIN_ASPECT_H / MIN_ASPECT_W
+                      }
+                  }""",
+                  ),
+                  (
+                      """        child.scaleX = if (renderSize[0] > 0) targetWidth.toFloat() / renderSize[0] else 1f
+                  child.scaleY = if (renderSize[1] > 0) targetHeight.toFloat() / renderSize[1] else 1f""",
+                      """        // Only the presentation scale changes: no WebView/canvas resize on toggle.
+                  // Fullscreen fills the panel (which may slightly stretch on very wide phones).
+                  val displayWidth = if (fullscreen) screenWidth else targetWidth
+                  val displayHeight = if (fullscreen) screenHeight else targetHeight
+                  child.scaleX = if (renderSize[0] > 0) displayWidth.toFloat() / renderSize[0] else 1f
+                  child.scaleY = if (renderSize[1] > 0) displayHeight.toFloat() / renderSize[1] else 1f""",
+                  ),
+              ],
+          )
+
+          modify(
+              "app/src/main/java/com/pvzge/gardendless/GameActivity.kt",
+              [
+                  (
+                      """    private var fullscreenCallback: CustomViewCallback? = null
+          """,
+                      """    // Fullscreen is handled by the existing WebView container, not by a detached HTML5 view.
+          """,
+                  ),
+                  (
+                      """            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                          if (fullscreenCallback != null) {
+                              callback.onCustomViewHidden()
+                              return
+                          }
+                          fullscreenCallback = callback
+                          setWebviewFullscreen(true)
+                      }
+
+                      override fun onHideCustomView() {
+                          val callback = fullscreenCallback ?: return
+                          fullscreenCallback = null
+                          callback.onCustomViewHidden()
+                          setWebviewFullscreen(false)
+                      }""",
+                      """            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                          // Never leave the original WebView hidden behind a custom fullscreen
+                          // surface that the Activity does not attach to the window.
+                          callback.onCustomViewHidden()
+                          setWebviewFullscreen(true)
+                      }
+
+                      override fun onHideCustomView() {
+                          // HTML5 fullscreen was declined; the app's own bridge handles exit.
+                      }""",
+                  ),
+                  (
+                      """        fullscreenCallback?.onCustomViewHidden()
+                  fullscreenCallback = null
+          """,
+                      "",
+                  ),
+                  (
+                      """    var req = ep.requestFullscreen || ep.webkitRequestFullscreen || ep.webkitRequestFullScreen;
+              if (req) {
+                  ep.requestFullscreen = function() { setFullscreen(true); return req.apply(this, arguments); };
+              }
+              var dp = Document.prototype;
+              var exit = dp.exitFullscreen || dp.webkitExitFullscreen || dp.webkitCancelFullScreen;
+              if (exit) {
+                  dp.exitFullscreen = function() { setFullscreen(false); return exit.apply(this, arguments); };
+              }""",
+                      """    // Intercept native HTML5 fullscreen: WebView expects a separately mounted
+              // custom view; this app uses its own non-detaching fullscreen container.
+              var req = ep.requestFullscreen || ep.webkitRequestFullscreen || ep.webkitRequestFullScreen;
+              if (req) {
+                  var safeRequest = function() { setFullscreen(true); return Promise.resolve(); };
+                  ep.requestFullscreen = safeRequest;
+                  if (ep.webkitRequestFullscreen) ep.webkitRequestFullscreen = safeRequest;
+                  if (ep.webkitRequestFullScreen) ep.webkitRequestFullScreen = safeRequest;
+              }
+              var dp = Document.prototype;
+              var exit = dp.exitFullscreen || dp.webkitExitFullscreen || dp.webkitCancelFullScreen;
+              if (exit) {
+                  var safeExit = function() { setFullscreen(false); return Promise.resolve(); };
+                  dp.exitFullscreen = safeExit;
+                  if (dp.webkitExitFullscreen) dp.webkitExitFullscreen = safeExit;
+                  if (dp.webkitCancelFullScreen) dp.webkitCancelFullScreen = safeExit;
+              }""",
+                  ),
+              ],
+          )
+
+          # Make a standalone debug app so the test cannot overwrite the user's original
+          # release-signed installation (or its save data). The app's update checker must
+          # not be used to replace this test installation.
+          modify(
+              "app/build.gradle.kts",
+              [
+                  (
+                      """    buildTypes {
+                  release {""",
+                      """    buildTypes {
+                  debug {
+                      applicationIdSuffix = ".mobilev04"
+                  }
+                  release {""",
+                  ),
+              ],
+          )
+          modify(
+              "app/src/main/AndroidManifest.xml",
+              [
+                  ('android:label="@string/app_name"', 'android:label="GE 全屏修复测试版"'),
+              ],
+          )
+          print("Patch applied. Build the independent debug APK with ./gradlew assembleDebug.")
+
+
+          # Replace the legacy mixed-coordinate mouse adapter with a touch-first one.
+          touch_path = ROOT / "app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt"
+          touch_src = touch_path.read_text(encoding="utf-8")
+          if not ("class MouseGameWebView" in touch_src and "injectJsMouseEvent" in touch_src
+                  and "injectMouseEventAt" in touch_src):
+              raise SystemExit("Unexpected touch source: refusing to overwrite a different implementation")
+          touch_path.write_text('// PvZ2 Gardendless Android — touch-first gesture adapter, experimental\n// Derived from MrPurple666/pvzge-android (GPL-3.0).\npackage com.pvzge.gardendless\n\nimport android.content.Context\nimport android.os.Handler\nimport android.os.Looper\nimport android.util.AttributeSet\nimport android.view.InputDevice\nimport android.view.MotionEvent\nimport android.view.ViewConfiguration\nimport android.webkit.WebView\nimport kotlin.math.hypot\n\n/**\n * Touch-first control scheme:\n * - short tap: one left-click (select/plant/collect)\n * - one finger moving beyond touch slop: left-button drag from touch-down position\n * - hold still: right-click, WITHOUT triggering a left-click first\n * - two-finger tap: right-click\n * - two-finger swipe: vertical/horizontal mouse wheel\n *\n * Unlike the original class, this never mixes CSS-coordinate JS mouse presses with\n * native-coordinate mouse moves, or forwards a second native touch click to WebView.\n */\nclass MouseGameWebView @JvmOverloads constructor(\n    context: Context, attrs: AttributeSet? = null\n) : WebView(context, attrs) {\n    private enum class Gesture { IDLE, PENDING, DRAGGING, LONG_PRESSED, TWO_FINGER }\n    private var gesture = Gesture.IDLE\n    private val mainHandler = Handler(Looper.getMainLooper())\n    private val slop = ViewConfiguration.get(context).scaledTouchSlop.toFloat().coerceAtLeast(8f)\n    private val density = context.resources.displayMetrics.density\n    private val longPressMs = 520L\n    private val moveIntervalMs = 16L\n    private var pointerId = MotionEvent.INVALID_POINTER_ID\n    private var downX = 0f\n    private var downY = 0f\n    private var lastX = 0f\n    private var lastY = 0f\n    private var lastMoveTime = 0L\n    private var lastCenterX = 0f\n    private var lastCenterY = 0f\n    private var startCenterX = 0f\n    private var startCenterY = 0f\n    private var scrollMoved = false\n\n    private val longPressJob = Runnable {\n        if (gesture == Gesture.PENDING) {\n            gesture = Gesture.LONG_PRESSED\n            dispatchPointer("right", downX, downY)\n        }\n    }\n\n    override fun dispatchTouchEvent(event: MotionEvent): Boolean {\n        // Preserve real mouse and trackpad input rather than treating it as touch.\n        if ((event.source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) {\n            return super.dispatchTouchEvent(event)\n        }\n        when (event.actionMasked) {\n            MotionEvent.ACTION_DOWN -> {\n                clearGesture()\n                pointerId = event.getPointerId(0)\n                downX = event.x\n                downY = event.y\n                lastX = downX\n                lastY = downY\n                gesture = Gesture.PENDING\n                mainHandler.postDelayed(longPressJob, longPressMs)\n            }\n            MotionEvent.ACTION_POINTER_DOWN -> {\n                if (event.pointerCount >= 2) {\n                    mainHandler.removeCallbacks(longPressJob)\n                    if (gesture == Gesture.DRAGGING) {\n                        dispatchPointer("up", lastX, lastY)\n                    }\n                    gesture = Gesture.TWO_FINGER\n                    val cx = (event.getX(0) + event.getX(1)) / 2f\n                    val cy = (event.getY(0) + event.getY(1)) / 2f\n                    startCenterX = cx\n                    startCenterY = cy\n                    lastCenterX = cx\n                    lastCenterY = cy\n                    scrollMoved = false\n                }\n            }\n            MotionEvent.ACTION_MOVE -> {\n                if (gesture == Gesture.TWO_FINGER && event.pointerCount >= 2) {\n                    val cx = (event.getX(0) + event.getX(1)) / 2f\n                    val cy = (event.getY(0) + event.getY(1)) / 2f\n                    if (!scrollMoved && hypot(cx - startCenterX, cy - startCenterY) >= slop * 1.7f) {\n                        scrollMoved = true\n                    }\n                    if (scrollMoved) {\n                        injectScroll(cx, cy, cx - lastCenterX, cy - lastCenterY)\n                    }\n                    lastCenterX = cx\n                    lastCenterY = cy\n                } else if (event.pointerCount == 1 &&\n                    (gesture == Gesture.PENDING || gesture == Gesture.DRAGGING)) {\n                    val index = event.findPointerIndex(pointerId).takeIf { it >= 0 } ?: 0\n                    val x = event.getX(index)\n                    val y = event.getY(index)\n                    lastX = x\n                    lastY = y\n                    if (gesture == Gesture.PENDING && hypot(x - downX, y - downY) >= slop) {\n                        mainHandler.removeCallbacks(longPressJob)\n                        // Press at the actual starting point: drag the chosen seed onto the lawn.\n                        dispatchPointer("down", downX, downY)\n                        gesture = Gesture.DRAGGING\n                        dispatchPointer("move", x, y)\n                        lastMoveTime = event.eventTime\n                    } else if (gesture == Gesture.DRAGGING && event.eventTime - lastMoveTime >= moveIntervalMs) {\n                        dispatchPointer("move", x, y)\n                        lastMoveTime = event.eventTime\n                    }\n                }\n            }\n            MotionEvent.ACTION_POINTER_UP -> {\n                // Do not reinterpret the remaining finger as a new single-finger tap.\n            }\n            MotionEvent.ACTION_UP -> {\n                when (gesture) {\n                    Gesture.PENDING -> dispatchPointer("click", event.x, event.y)\n                    Gesture.DRAGGING -> {\n                        // Flush the last position even if move events were coalesced.\n                        dispatchPointer("move", event.x, event.y)\n                        dispatchPointer("up", event.x, event.y)\n                    }\n                    Gesture.TWO_FINGER -> if (!scrollMoved) {\n                        dispatchPointer("right", lastCenterX, lastCenterY)\n                    }\n                    else -> Unit\n                }\n                clearGesture()\n            }\n            MotionEvent.ACTION_CANCEL -> {\n                if (gesture == Gesture.DRAGGING) dispatchPointer("up", lastX, lastY)\n                clearGesture()\n            }\n        }\n        return true\n    }\n\n    private fun clearGesture() {\n        mainHandler.removeCallbacks(longPressJob)\n        gesture = Gesture.IDLE\n        pointerId = MotionEvent.INVALID_POINTER_ID\n        scrollMoved = false\n    }\n\n    override fun onDetachedFromWindow() {\n        mainHandler.removeCallbacks(longPressJob)\n        super.onDetachedFromWindow()\n    }\n\n    private fun dispatchPointer(type: String, x: Float, y: Float) {\n        val w = width\n        val h = height\n        if (w <= 0 || h <= 0) return\n        // Fractions are robust to Android density, Original/Balanced resolution,\n        // WebView scale and asymmetric letterboxing; JS maps into the CSS viewport.\n        val fx = (x / w).coerceIn(0f, 1f)\n        val fy = (y / h).coerceIn(0f, 1f)\n        evaluateJavascript("window.GEAndroidTouch && window.GEAndroidTouch.pointer(\'$type\',$fx,$fy);", null)\n    }\n\n    private fun injectScroll(x: Float, y: Float, dx: Float, dy: Float) {\n        val props = arrayOf(MotionEvent.PointerProperties().apply {\n            id = 0\n            toolType = MotionEvent.TOOL_TYPE_MOUSE\n        })\n        val coords = arrayOf(MotionEvent.PointerCoords().apply {\n            this.x = x\n            this.y = y\n            setAxisValue(MotionEvent.AXIS_HSCROLL, dx / (24f * density))\n            setAxisValue(MotionEvent.AXIS_VSCROLL, dy / (24f * density))\n        })\n        val now = android.os.SystemClock.uptimeMillis()\n        val wheel = MotionEvent.obtain(\n            now, now, MotionEvent.ACTION_SCROLL, 1, props, coords,\n            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0\n        )\n        try {\n            super.dispatchGenericMotionEvent(wheel)\n        } finally {\n            wheel.recycle()\n        }\n    }\n}\n', encoding="utf-8")
+          print("Patched touch input class")
+
+          modify("app/src/main/java/com/pvzge/gardendless/GameActivity.kt", [
+              ('performanceScript + gameBridgeHookJs + "</script>"',
+               'performanceScript + gameBridgeHookJs + androidTouchHookJs + "</script>"'),
+              ('    private val gameBridgeHookJs = """',
+               '    private val androidTouchHookJs = """\n' + "(function() {\n    if (window.GEAndroidTouch) return;\n    var canvas = function() { return document.getElementById('GameCanvas'); };\n    function cssPosition(nx, ny) {\n        var v = window.visualViewport;\n        var w = (v && v.width) || window.innerWidth;\n        var h = (v && v.height) || window.innerHeight;\n        var ox = (v && v.offsetLeft) || 0;\n        var oy = (v && v.offsetTop) || 0;\n        return [ox + nx * w, oy + ny * h];\n    }\n    function mouse(type, x, y, button, buttons) {\n        var target = canvas() || document.elementFromPoint(x, y);\n        if (!target) return;\n        target.dispatchEvent(new MouseEvent(type, {\n            view: window, bubbles: true, cancelable: true,\n            clientX: x, clientY: y, screenX: x, screenY: y,\n            button: button, buttons: buttons\n        }));\n    }\n    window.GEAndroidTouch = {\n        pointer: function(type, nx, ny) {\n            var p = cssPosition(nx, ny), x = p[0], y = p[1];\n            switch (type) {\n                case 'click':\n                    mouse('mousedown', x, y, 0, 1);\n                    mouse('mouseup', x, y, 0, 0);\n                    break;\n                case 'down': mouse('mousedown', x, y, 0, 1); break;\n                case 'move': mouse('mousemove', x, y, 0, 1); break;\n                case 'up': mouse('mouseup', x, y, 0, 0); break;\n                case 'right':\n                    mouse('mousedown', x, y, 2, 2);\n                    mouse('mouseup', x, y, 2, 0);\n                    break;\n            }\n        }\n    };\n})();" + '\n    """.trimIndent()\n\n    private val gameBridgeHookJs = """'),
+              ("        // Check for app updates in background (doesn't block game)\n        checkForAppUpdate()", "        // No upstream updater in this experimental standalone build.")
+          ])
+          print("Touch-first experimental Android patch applied")
+          PYFIX
+          python3 /tmp/ge_patch.py
+      - name: Apply actual mobile-style plant drag and aspect-safe fullscreen
+        shell: bash
+        run: |
+          cat > /tmp/ge_patch_v03.py <<'PYFIX03'
+          #!/usr/bin/env python3
+          """Follow-up to v0.2 test patch, anchored on MrPurple666 v0.16.1.
+          
+          v0.2 already neutralizes the problematic HTML5 fullscreen API and provides a
+          uniform event transport.  v0.3 fixes the visual distortion and implements a
+          separate plant-drag interaction rather than only a mouse-press drag.
+          """
+          from pathlib import Path
+          
+          ROOT = Path.cwd()
+          
+          def replace_exact(path, old, new):
+              p = ROOT / path
+              s = p.read_text(encoding="utf-8")
+              n = s.count(old)
+              if n != 1:
+                  raise RuntimeError(f"Expected exactly one match ({n}) in {path}: {old[:90]!r}")
+              p.write_text(s.replace(old,new,1), encoding="utf-8")
+              print("Updated",path)
+          
+          aspect = "app/src/main/java/com/pvzge/gardendless/AspectRatioFrameLayout.kt"
+          replace_exact(aspect,
+          '''        // Always keep the WebView's measured size stable during fullscreen changes.
+                  // The previous implementation remeasured the Cocos canvas to the phone's
+                  // extra-wide aspect ratio, which can stall some Android WebView renderers.
+                  when {
+                      screenWidth * MAX_ASPECT_H > screenHeight * MAX_ASPECT_W -> {
+                          targetWidth = screenHeight * MAX_ASPECT_W / MAX_ASPECT_H
+                      }
+                      screenWidth * MIN_ASPECT_H < screenHeight * MIN_ASPECT_W -> {
+                          targetHeight = screenWidth * MIN_ASPECT_H / MIN_ASPECT_W
+                      }
+                  }''',
+          '''        // Keep the actual Android landscape viewport aspect ratio. The old fix
+                  // first forced a 17:9 WebView and then independently scaled it to the
+                  // phone's wider display, visibly distorting circles and grid cells.
+                  // With immersive fullscreen enabled from launch, no ratio toggle resize
+                  // is needed, so the game can lay out its own canvas at the real ratio.
+          ''')
+          replace_exact(aspect,
+          '''        // Only the presentation scale changes: no WebView/canvas resize on toggle.
+                  // Fullscreen fills the panel (which may slightly stretch on very wide phones).
+                  val displayWidth = if (fullscreen) screenWidth else targetWidth
+                  val displayHeight = if (fullscreen) screenHeight else targetHeight
+                  child.scaleX = if (renderSize[0] > 0) displayWidth.toFloat() / renderSize[0] else 1f
+                  child.scaleY = if (renderSize[1] > 0) displayHeight.toFloat() / renderSize[1] else 1f''',
+          '''        // Use one isotropic presentation scale: no squashed plants/zombies.
+                  // RenderSize.fit() preserves aspect ratio, including Balanced/Low-end.
+                  val sx = if (renderSize[0] > 0) screenWidth.toFloat() / renderSize[0] else 1f
+                  val sy = if (renderSize[1] > 0) screenHeight.toFloat() / renderSize[1] else 1f
+                  val s = minOf(sx, sy)
+                  child.scaleX = s
+                  child.scaleY = s''')
+          
+          activity = "app/src/main/java/com/pvzge/gardendless/GameActivity.kt"
+          replace_exact(activity,
+           'fullscreen = prefs.getBoolean(PREF_FULLSCREEN, false)',
+           'fullscreen = true  // Pre-size WebView to full display BEFORE first frame')
+          replace_exact(activity,
+           '        aspectContainer.fullscreen = enabled',
+           '''        // The display is already immersive and correctly sized on first launch.
+                  // Do not resize an active WebGL canvas on a late game fullscreen toggle.
+                  aspectContainer.fullscreen = true''')
+          # Label lives in AndroidManifest, not GameActivity.
+          replace_exact("app/src/main/AndroidManifest.xml",
+           'android:label="GE 全屏修复测试版"',
+           'android:label="GE 手机触控测试版 v0.3"')
+          
+          # Change only the gesture state machine; keep old v0.2 JS transport and
+          # non-plant dragging as fallback.  Seed packet drag becomes click-to-arm,
+          # hover-to-aim, click-to-place at finger lift (the native PvZ2 gesture).
+          touch = "app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt"
+          replace_exact(touch,
+           'private enum class Gesture { IDLE, PENDING, DRAGGING, LONG_PRESSED, TWO_FINGER }',
+           'private enum class Gesture { IDLE, PENDING, DRAGGING, SEED_DRAG, LONG_PRESSED, TWO_FINGER }')
+          replace_exact(touch,
+          '''                    if (gesture == Gesture.DRAGGING) {
+                                  dispatchPointer("up", lastX, lastY)
+                              }''',
+          '''                    if (gesture == Gesture.DRAGGING) {
+                                  dispatchPointer("up", lastX, lastY)
+                              } else if (gesture == Gesture.SEED_DRAG) {
+                                  dispatchPointer("right", lastX, lastY) // cancel selected seed
+                              }''')
+          replace_exact(touch,
+          '''                } else if (event.pointerCount == 1 &&
+                              (gesture == Gesture.PENDING || gesture == Gesture.DRAGGING)) {''',
+          '''                } else if (event.pointerCount == 1 &&
+                              (gesture == Gesture.PENDING || gesture == Gesture.DRAGGING ||
+                               gesture == Gesture.SEED_DRAG)) {''')
+          replace_exact(touch,
+          '''                        // Press at the actual starting point: drag the chosen seed onto the lawn.
+                                  dispatchPointer("down", downX, downY)
+                                  gesture = Gesture.DRAGGING
+                                  dispatchPointer("move", x, y)
+                                  lastMoveTime = event.eventTime
+                              } else if (gesture == Gesture.DRAGGING && event.eventTime - lastMoveTime >= moveIntervalMs) {
+                                  dispatchPointer("move", x, y)
+                                  lastMoveTime = event.eventTime
+                              }''',
+          '''                        if (isLikelySeedPacket(downX, downY)) {
+                                      // Mobile PvZ style: select packet immediately, then aim
+                                      // a *hovering* plant at the finger's current lawn tile.
+                                      // Lifting the finger sends a separate placement click.
+                                      dispatchPointer("click", downX, downY)
+                                      gesture = Gesture.SEED_DRAG
+                                      dispatchPointer("hover", x, y)
+                                  } else {
+                                      // Menus / non-seed gestures preserve mouse drag behavior.
+                                      dispatchPointer("down", downX, downY)
+                                      gesture = Gesture.DRAGGING
+                                      dispatchPointer("move", x, y)
+                                  }
+                                  lastMoveTime = event.eventTime
+                              } else if ((gesture == Gesture.DRAGGING || gesture == Gesture.SEED_DRAG) &&
+                                  event.eventTime - lastMoveTime >= moveIntervalMs) {
+                                  dispatchPointer(if (gesture == Gesture.SEED_DRAG) "hover" else "move", x, y)
+                                  lastMoveTime = event.eventTime
+                              }''')
+          replace_exact(touch,
+          '''                    Gesture.DRAGGING -> {
+                                  // Flush the last position even if move events were coalesced.
+                                  dispatchPointer("move", event.x, event.y)
+                                  dispatchPointer("up", event.x, event.y)
+                              }
+                              Gesture.TWO_FINGER ->''',
+          '''                    Gesture.DRAGGING -> {
+                                  // Flush the last position even if move events were coalesced.
+                                  dispatchPointer("move", event.x, event.y)
+                                  dispatchPointer("up", event.x, event.y)
+                              }
+                              Gesture.SEED_DRAG -> {
+                                  // A seed drag is a select -> aim -> place gesture, rather
+                                  // than a long mouse hold at the packet. Cancel if released
+                                  // in the top UI to avoid unintended planting.
+                                  if (event.y > height * 0.19f) {
+                                      dispatchPointer("hover", event.x, event.y)
+                                      dispatchPointer("click", event.x, event.y)
+                                  } else {
+                                      dispatchPointer("right", event.x, event.y)
+                                  }
+                              }
+                              Gesture.TWO_FINGER ->''')
+          replace_exact(touch,
+          '''                if (gesture == Gesture.DRAGGING) dispatchPointer("up", lastX, lastY)
+                          clearGesture()''',
+          '''                if (gesture == Gesture.DRAGGING) dispatchPointer("up", lastX, lastY)
+                          if (gesture == Gesture.SEED_DRAG) dispatchPointer("right", lastX, lastY)
+                          clearGesture()''')
+          replace_exact(touch,
+          '''    private fun clearGesture() {''',
+          '''    /**
+               * Upper seed bank on gameplay screens. We deliberately do NOT convert
+               * arbitrary drags into placements: dialogs, menus and lawn interactions
+               * still use standard touch-to-mouse handling.
+               * Gameplay HUD geometry varies by world; this is a *heuristic* that must
+               * be checked on the user's phone and updated for special menus.
+               */
+              private fun isLikelySeedPacket(x: Float, y: Float): Boolean {
+                  if (width <= 0 || height <= 0) return false
+                  val nx = x / width
+                  val ny = y / height
+                  return nx >= 0.26f && nx <= 0.82f && ny <= 0.18f
+              }
+          
+              private fun clearGesture() {''')
+          
+          # Two click/tap events plus a separate hover pointer event, not mouse drag.
+          replace_exact(activity,
+          '''                case 'move': mouse('mousemove', x, y, 0, 1); break;
+                          case 'up': mouse('mouseup', x, y, 0, 0); break;''',
+          '''                case 'move': mouse('mousemove', x, y, 0, 1); break;
+                          case 'hover': mouse('mousemove', x, y, 0, 0); break;
+                          case 'up': mouse('mouseup', x, y, 0, 0); break;''')
+          print("v0.3 post-patch complete: uniform viewport + mobile-style seed packet drag")
+          PYFIX03
+          python3 -m py_compile /tmp/ge_patch_v03.py
+          python3 /tmp/ge_patch_v03.py
+          grep -q 'Gesture.SEED_DRAG' app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt
+          grep -q 'child.scaleX = s' app/src/main/java/com/pvzge/gardendless/AspectRatioFrameLayout.kt
+          grep -q 'child.scaleY = s' app/src/main/java/com/pvzge/gardendless/AspectRatioFrameLayout.kt
+          echo 'Mobile gesture + aspect-safety patch applied successfully'
+      - name: Add mobile-style shovel tool (v0.4)
+        shell: bash
+        run: |
+          cat > /tmp/ge_mobile_shovel_v04.py <<'PYSHOVEL04'
+          #!/usr/bin/env python3
+          """Additional v0.4 patch after v0.3. Replaces long-press-to-shovel for normal use
+          with a visible mobile-style 'shovel then tap lawn' control.
+          This does not modify the Cocos game engine; it sends the documented right-click
+          shovel action where the user taps.
+          """
+          from pathlib import Path
+          
+          root = Path.cwd()
+          
+          def replace_exact(rel, before, after):
+              p = root / rel
+              s = p.read_text(encoding='utf-8')
+              count=s.count(before)
+              if count!=1:
+                  raise RuntimeError(f'Expected one exact match, got {count} in {rel}: {before[:80]!r}')
+              p.write_text(s.replace(before,after,1),encoding='utf-8')
+              print(f'Patched {rel}')
+          
+          rel_touch='app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt'
+          rel_activity='app/src/main/java/com/pvzge/gardendless/GameActivity.kt'
+          
+          replace_exact(rel_touch,
+          '''    private var gesture = Gesture.IDLE
+          ''',
+          '''    private var gesture = Gesture.IDLE
+          
+              // The on-screen shovel is a one-shot tool, like mobile PvZ.
+              // The game currently exposes shovel by right mouse button on a lawn tile.
+              var onShovelModeChanged: ((Boolean) -> Unit)? = null
+              var shovelModeEnabled: Boolean = false
+                  private set
+          
+              fun setShovelMode(enabled: Boolean) {
+                  if (shovelModeEnabled == enabled) return
+                  shovelModeEnabled = enabled
+                  onShovelModeChanged?.invoke(enabled)
+              }
+          ''')
+          replace_exact(rel_touch,
+          '''                mainHandler.postDelayed(longPressJob, longPressMs)''',
+          '''                if (!shovelModeEnabled) mainHandler.postDelayed(longPressJob, longPressMs)''')
+          replace_exact(rel_touch,
+          '''                    if (gesture == Gesture.PENDING && hypot(x - downX, y - downY) >= slop) {
+                                  mainHandler.removeCallbacks(longPressJob)
+                                  if (isLikelySeedPacket(downX, downY)) {''',
+          '''                    if (gesture == Gesture.PENDING && hypot(x - downX, y - downY) >= slop && !shovelModeEnabled) {
+                                  mainHandler.removeCallbacks(longPressJob)
+                                  if (isLikelySeedPacket(downX, downY)) {''')
+          replace_exact(rel_touch,
+          '''                    Gesture.PENDING -> dispatchPointer("click", event.x, event.y)''',
+          '''                    Gesture.PENDING -> {
+                                  if (shovelModeEnabled) {
+                                      // Tap the target plant once; native wrapper converts to the
+                                      // game's right-button shovel command at the precise tile.
+                                      dispatchPointer("right", event.x, event.y)
+                                      setShovelMode(false)
+                                  } else {
+                                      dispatchPointer("click", event.x, event.y)
+                                  }
+                              }''')
+          replace_exact(rel_touch,
+          '''                    Gesture.TWO_FINGER -> if (!scrollMoved) {
+                                  dispatchPointer("right", lastCenterX, lastCenterY)
+                              }''',
+          '''                    Gesture.TWO_FINGER -> if (!scrollMoved) {
+                                  dispatchPointer("right", lastCenterX, lastCenterY)
+                                  if (shovelModeEnabled) setShovelMode(false)
+                              }''')
+          
+          # Native TextView button: unlike injected HTML, it remains tappable because the
+          # touch adapter intercepts and consumes touch events *inside* the WebView.
+          replace_exact(rel_activity,
+          '''        setContentView(aspectContainer)
+          ''',
+          '''        setContentView(aspectContainer)
+                  installMobileShovelButton()
+          ''')
+          replace_exact(rel_activity,
+          '''    private fun setupBackNavigation() {''',
+          '''    /** Touch-first shovel UI: tap shovel -> tap a planted lawn tile -> auto-exit. */
+              private fun installMobileShovelButton() {
+                  val touch = webView as MouseGameWebView
+                  val scale = resources.displayMetrics.density
+                  fun dp(n: Int): Int = (n * scale + 0.5f).toInt()
+                  val button = TextView(this).apply {
+                      text = "🪏 铲子"
+                      textSize = 14f
+                      setTextColor(android.graphics.Color.WHITE)
+                      setPadding(dp(12), dp(7), dp(12), dp(7))
+                      gravity = android.view.Gravity.CENTER
+                      contentDescription = "铲子：点一次启用，再点植物铲除；再次点击取消"
+                      isClickable = true
+                      isFocusable = true
+                      elevation = dp(4).toFloat()
+                  }
+                  fun refresh(enabled: Boolean) {
+                      button.text = if (enabled) "✓ 铲子" else "🪏 铲子"
+                      button.background = android.graphics.drawable.GradientDrawable().apply {
+                          cornerRadius = dp(12).toFloat()
+                          setColor(if (enabled) 0xFF338C48.toInt() else 0xCC263238.toInt())
+                          setStroke(dp(1), if (enabled) 0xFFB9F6CA.toInt() else 0x99FFFFFF.toInt())
+                      }
+                  }
+                  touch.onShovelModeChanged = { enabled -> refresh(enabled) }
+                  button.setOnClickListener { touch.setShovelMode(!touch.shovelModeEnabled) }
+                  val params = android.widget.FrameLayout.LayoutParams(
+                      android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                      android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                      android.view.Gravity.TOP or android.view.Gravity.END
+                  ).apply {
+                      topMargin = dp(65) // below the game's top-right pause button
+                      marginEnd = dp(12)
+                  }
+                  aspectContainer.addView(button, params)
+                  refresh(false)
+              }
+          
+              private fun setupBackNavigation() {''')
+          # Version label is a freeform Android string override (only in test build).
+          replace_exact('app/src/main/AndroidManifest.xml',
+          'android:label="GE 手机触控测试版 v0.3"',
+          'android:label="GE 手机触控+铲子 v0.4"')
+          
+          print('v0.4 mobile shovel: on-screen toggle, next tap sends right-click shovel, auto-resets.')
+          PYSHOVEL04
+          python3 -m py_compile /tmp/ge_mobile_shovel_v04.py
+          python3 /tmp/ge_mobile_shovel_v04.py
+          grep -q 'installMobileShovelButton()' app/src/main/java/com/pvzge/gardendless/GameActivity.kt
+          grep -q 'shovelModeEnabled' app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt
+      - name: Download game assets
+        run: |
+          # Reuse the exact upstream v0.16.1 bundle while its source repository is unavailable.
+          curl --fail --location --retry 3 --output /tmp/ge-original.apk https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.1/app-release.apk
+          echo "d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35  /tmp/ge-original.apk" | sha256sum --check
+          python3 - <<'PYASSETS'
+          from pathlib import Path
+          import shutil, zipfile
+          target = Path("app/src/main/assets/pvzge_web.zip")
+          target.parent.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile("/tmp/ge-original.apk") as apk:
+              with apk.open("assets/pvzge_web.zip") as source, target.open("wb") as dest:
+                  shutil.copyfileobj(source, dest)
+          with zipfile.ZipFile(target) as bundle:
+              names = bundle.namelist()
+              assert "index.html" in names, "Game entry point missing"
+              assert any(name.startswith("assets/") for name in names), "Game resources missing"
+              print(f"Recovered original v0.16.1 game bundle: {target.stat().st_size} bytes, {len(names)} entries")
+          PYASSETS
+          rm /tmp/ge-original.apk
+      - name: Compile experimental APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug -x createGameZip --no-daemon --stacktrace
+          test -s app/build/outputs/apk/debug/app-debug.apk
+      - name: Verify APK signing, identity and v0.4 features
+        shell: bash
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          "$TOOLS/apksigner" verify --verbose "$APK"
+          "$TOOLS/aapt" dump badging "$APK" > /tmp/ge-v04-badging.txt
+          grep -F "package: name='com.pvzge.gardendless.mobilev04'" /tmp/ge-v04-badging.txt
+          git diff --exit-code -- app/src/main/java/com/pvzge/gardendless/PerformanceMode.kt app/src/main/java/com/pvzge/gardendless/RenderSize.kt
+          python3 - <<'PYVERIFY04'
+          from pathlib import Path
+          import hashlib, zipfile
+          apk=Path("app/build/outputs/apk/debug/app-debug.apk")
+          root=Path("app/src/main/java/com/pvzge/gardendless")
+          touch=(root/"MouseGameWebView.kt").read_text()
+          activity=(root/"GameActivity.kt").read_text()
+          aspect=(root/"AspectRatioFrameLayout.kt").read_text()
+          performance=(root/"PerformanceMode.kt").read_text()
+          assert 'Gesture.SEED_DRAG' in touch
+          assert 'dispatchPointer("hover", event.x, event.y)' in touch
+          assert 'dispatchPointer("click", event.x, event.y)' in touch
+          assert 'installMobileShovelButton()' in activity
+          assert 'dispatchPointer("right", event.x, event.y)\n                            setShovelMode(false)' in touch
+          assert 'child.scaleX = s' in aspect and 'child.scaleY = s' in aspect
+          assert 'val s = minOf(sx, sy)' in aspect
+          assert 'ORIGINAL(60, 0,' in performance
+          with zipfile.ZipFile(apk) as z:
+              assert z.testzip() is None, "APK ZIP integrity failed"
+              assert z.getinfo("assets/pvzge_web.zip").file_size > 1000000000
+              dex=b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
+              for marker in (b"SEED_DRAG",b"installMobileShovelButton",b"shovelModeEnabled",b"GEAndroidTouch",b"ORIGINAL"):
+                  assert marker in dex, f"Compiled DEX marker missing: {marker}"
+          h=hashlib.sha256()
+          with apk.open("rb") as f:
+              for chunk in iter(lambda:f.read(1024*1024),b""):h.update(chunk)
+          print("APK verification passed: package, signing, ZIP integrity, bundled game assets and compiled feature markers.")
+          print("Source checks passed: mobile seed gesture, one-shot shovel, uniform aspect scale, unchanged Original rendering option.")
+          print("Physical-device gameplay is NOT tested; seed-bank detection is heuristic.")
+          print("APK bytes:",apk.stat().st_size)
+          print("APK SHA256:",h.hexdigest())
+          Path("app/build/outputs/apk/debug/GE-v04.apk.sha256").write_text(h.hexdigest()+"  app-debug.apk\n")
+          PYVERIFY04
+      - name: Upload APK (download on phone)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GE-Mobile-Touch-Shovel-Proportional-v04-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          compression-level: 0
+          retention-days: 5
+          if-no-files-found: error
