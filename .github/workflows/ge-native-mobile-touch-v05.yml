@@ -1,0 +1,99 @@
+name: GE v0.5 Native Single Touch (experimental APK)
+permissions:
+  contents: read
+jobs:
+  android-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+    - name: Checkout personal fork (read-only for build)
+      uses: actions/checkout@v4
+    - name: Preserve v0.5 patch and fetch original Android v0.16.1 code
+      shell: bash
+      run: 'set -euo pipefail
+
+        mkdir -p /tmp/ge-v05
+
+        cp v05/ge-mobile-input.js v05/apply_v05.py v05/test-mobile-input.cjs v05/inspect-game.py /tmp/ge-v05/
+
+        git fetch --depth 1 https://github.com/MrPurple666/pvzge-android.git refs/tags/v0.16.1
+
+        git checkout --detach FETCH_HEAD
+
+        '
+    - name: Test single-finger input events (no APK yet)
+      shell: bash
+      run: 'node --check /tmp/ge-v05/ge-mobile-input.js
+
+        node --test /tmp/ge-v05/test-mobile-input.cjs
+
+        '
+    - name: Setup Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Install Android SDK 35
+      shell: bash
+      run: 'set -euo pipefail
+
+        export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+
+        "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0"
+
+        '
+    - name: Apply v0.5 patch to original source
+      run: 'python3 /tmp/ge-v05/apply_v05.py .
+
+        test -s app/src/main/assets/ge-mobile-input.js
+
+        ! grep -q ''injectMouseEventAt'' app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt
+
+        ! grep -q ''installMobileShovelButton'' app/src/main/java/com/pvzge/gardendless/GameActivity.kt
+
+        '
+    - name: Clone complete game assets
+      shell: bash
+      run: "# Reuse the exact upstream v0.16.1 bundle while its source repository is unavailable.\ncurl --fail --location\
+        \ --retry 3 --output /tmp/ge-original.apk https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.1/app-release.apk\n\
+        echo \"d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35  /tmp/ge-original.apk\" | sha256sum --check\n\
+        python3 - <<'PYASSETS'\nfrom pathlib import Path\nimport shutil, zipfile\ntarget = Path(\"app/src/main/assets/pvzge_web.zip\"\
+        )\ntarget.parent.mkdir(parents=True, exist_ok=True)\nwith zipfile.ZipFile(\"/tmp/ge-original.apk\") as apk:\n    with\
+        \ apk.open(\"assets/pvzge_web.zip\") as source, target.open(\"wb\") as dest:\n        shutil.copyfileobj(source, dest)\n\
+        with zipfile.ZipFile(target) as bundle:\n    names = bundle.namelist()\n    assert \"index.html\" in names, \"Game\
+        \ entry point missing\"\n    assert any(name.startswith(\"assets/\") for name in names), \"Game resources missing\"\
+        \n    print(f\"Recovered original v0.16.1 game bundle: {target.stat().st_size} bytes, {len(names)} entries\")\nPYASSETS\n\
+        rm /tmp/ge-original.apk\n"
+    - name: Inspect actual Cocos game input and shovel state
+      run: python3 /tmp/ge-v05/inspect-game.py
+    - name: Build isolated debug APK
+      shell: bash
+      run: 'set -euo pipefail
+
+        chmod +x ./gradlew
+
+        ./gradlew :app:assembleDebug -x createGameZip --no-daemon --stacktrace
+
+        test -s app/build/outputs/apk/debug/app-debug.apk
+
+        unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F ''assets/ge-mobile-input.js''
+
+        unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F ''assets/pvzge_web.zip''
+
+        '
+    - name: Verify APK signature and independent identity
+      run: '"$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
+
+        "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk | head -6
+
+        sha256sum app/build/outputs/apk/debug/app-debug.apk'
+    - name: Upload experimental APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: GE-v05-Native-Single-Touch-TEST-APK
+        path: app/build/outputs/apk/debug/app-debug.apk
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+'on':
+  workflow_dispatch: null
