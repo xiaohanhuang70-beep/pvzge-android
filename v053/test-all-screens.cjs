@@ -19,7 +19,7 @@ test('battle motion without card state transition cannot double-plant',async()=>
 });
 test('settings fallback without native ScrollView receives single finger wheel',async()=>{
  const s=env('mainScene',{settings:true});await s.flush();s.fire('touchstart',one());s.fire('touchmove',one(50,20));s.fire('touchend',[],one(50,20));await s.flush();
- assert.equal(mouse(s).length,0);assert.equal(s.log[0].type,'wheel');assert.equal(s.log[0].deltaY,80);
+ assert.equal(mouse(s).length,0);assert.equal(s.log.filter(e=>e.type==='wheel').length,1);assert.equal(s.log.find(e=>e.type==='wheel').deltaY,80);
 });
 test('settings button tap receives no duplicate synthetic mouse',async()=>{
  const s=env('mainScene',{settings:true,nativeScroll:true});await s.flush();tap(s);await s.flush();assert.equal(s.log.length,0);assert.equal(s.stops(),0);
@@ -41,4 +41,8 @@ test('garden pinch emits zoom wheel and no right button',async()=>{
 });
 test('remaining finger after multi cannot click but fresh tap works',async()=>{
  const s=env('zenGardenScene');await s.flush();s.fire('touchstart',[[1,10,10],[2,40,10]]);s.fire('touchend',one(10,10),[[2,40,10]]);s.fire('touchmove',one(15,10));s.fire('touchend',[],one(15,10));await s.flush();s.log.length=0;tap(s);await s.flush();assert.equal(mouse(s).filter(e=>e.type==='mousedown').length,1);
+});
+
+test('horizontal settings slider gesture remains native without scrolling',async()=>{
+ const s=env('worldMapScene',{settings:true,nativeScroll:true});await s.flush();s.fire('touchstart',one());s.fire('touchmove',one(150,65));s.fire('touchend',[],one(150,65));await s.flush();assert.equal(s.log.length,0);assert.equal(s.stops(),0);
 });

@@ -7,6 +7,7 @@ function env(name='worldMapScene',options={}) {
  const scene={name,active:true,_components:[],children:[]};
  if(options.settings){const node={parent:scene,active:true,activeInHierarchy:true,children:[],_components:[]};
  node._components.push({_class:'SettingWindow',enabled:true,node,scrollView:options.nativeScroll?{enabled:true}:null});scene.children.push(node);}
+ if(options.chooser)scene._components.push({_class:'WorldMapChooser',enabled:true,node:scene});
  const ui={index:-1,gameStarted:true,paused:false,tryChangingIndex(i){this.index=i;}};
  let plants=[{}];const cell={getAllPlants:()=>plants};
  const cc={director:{getScene:()=>scene},js:{getClassName:c=>c._class||''}};

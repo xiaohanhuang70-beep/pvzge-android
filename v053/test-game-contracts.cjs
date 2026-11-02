@@ -47,3 +47,7 @@ test('actual setting scroll buttons use the ScrollView content offset',()=>{
  const settings={scrollView:{getScrollOffset:()=>({y:500}),scrollToOffset(p,t){offsets.push([p.x,p.y,t]);}}};
  fn('SettingWindow','a.scrowUp=',ctx).call(settings);fn('SettingWindow','a.scrowDown=',ctx).call(settings);assert.deepEqual(offsets,[[0,100,.2],[0,900,.2]]);
 });
+
+test('actual world chooser wheel changes the world selection once',()=>{
+ const calls=[];fn('WorldMapChooser','a.onMouseWheel=').call({moveBy(n){calls.push(n);}},{getScrollY:()=>-120});assert.deepEqual(calls,[1]);
+});

@@ -44,20 +44,34 @@ const {chromium}=require('playwright');const fs=require('node:fs');const {spawn}
   await page.screenshot({path:out+'/runtime-main.png'});
   await scene('worldMapScene','GoToWorldmap');await page.waitForTimeout(2200);
   const npcState=()=>page.evaluate(()=>{const n=System.get('chunks:///_virtual/NPC_Controller.ts')?.npc_controller;return {step:n?.CurrentFlowStep,length:n?.CurrentFlow?.length,blocked:!!n?.CurrentNPC?.UnSkippable};});
+  // Replay this actual world's intro in the fresh fixture if already marked viewed.
+  const storyFixture=await page.evaluate(()=>{const n=System.get('chunks:///_virtual/NPC_Controller.ts').npc_controller,w=System.get('chunks:///_virtual/worldMapScene.ts').worldMapScene.component;let key=w.currentWM?.MapProps?.INTRO;let flow=key?n.Getflow(key):null;if(!flow?.length){const props=w.wmfs.find(p=>p.INTRO&&n.Getflow(p.INTRO)?.length);key=props?.INTRO;flow=key?n.Getflow(key):null;}if(!n.CurrentFlow?.length&&flow?.length)n.SetFlow(flow);return {key,flowLength:flow?.length,npcs:n.npcs.map(x=>x.NPC_Name)};});
+  await page.waitForTimeout(2200);
+  report.storyFixture=storyFixture;
   const before=await npcState();let after=before;
   if(before.length>0){for(let i=0;i<6;i++){await page.touchscreen.tap(640,400);await page.waitForTimeout(700);after=await npcState();if(after.step>before.step||after.length===0)break;}check('Actual Dave world-map dialogue advances by touch',after.step>before.step||after.length===0,{before,after});}
-  else check('Actual Dave world-map dialogue advances by touch',false,{reason:'No initial tutorial flow available; cannot validate this scenario',before});
+  else check('Actual Dave world-map dialogue advances by touch',false,{reason:'No initial tutorial flow available; cannot validate this scenario',before,storyFixture});
   await page.screenshot({path:out+'/runtime-world.png'});
   // End the tutorial only in this fresh CI fixture, to access settings/garden.
   await page.evaluate(()=>{const n=System.get('chunks:///_virtual/NPC_Controller.ts').npc_controller;n.CurrentFlow=[];n.npcs.forEach(x=>{x.node.active=false;});const w=System.get('chunks:///_virtual/worldMapScene.ts').worldMapScene.component;w.settingWindow.active=true;});
   await page.waitForTimeout(700);
   const getOffset=()=>page.evaluate(()=>{const w=System.get('chunks:///_virtual/worldMapScene.ts').worldMapScene.component;const s=w.settingWindow.getComponent(System.get('chunks:///_virtual/SettingWindow.ts').SettingWindow);return {y:s.scrollView.getScrollOffset().y,max:s.scrollView.getMaxScrollOffset().y};});
   const pos=await location('settings'),offsetBefore=await getOffset();
-  await gesture(Array.from({length:10},(_,i)=>[[pos.x,pos.y+100-i*22]]));const offsetAfter=await getOffset();
+  await gesture(Array.from({length:10},(_,i)=>[[pos.x-160,pos.y+70-i*15]]));const offsetAfter=await getOffset();
   check('Actual SettingWindow ScrollView single finger scroll',Math.abs(offsetAfter.y-offsetBefore.y)>5,{offsetBefore,offsetAfter,pos});
   const twoBefore=await getOffset();await gesture(Array.from({length:8},(_,i)=>[[pos.x-40,pos.y+60-i*15],[pos.x+40,pos.y+60-i*15]]));const twoAfter=await getOffset();
   check('Actual SettingWindow two finger wheel compatibility',Math.abs(twoAfter.y-twoBefore.y)>5,{twoBefore,twoAfter});
   await page.screenshot({path:out+'/runtime-settings.png'});
+  // World chooser is wheel-only upstream; validate the one-finger bridge against its real index.
+  try{
+   await page.evaluate(()=>{const w=System.get('chunks:///_virtual/worldMapScene.ts').worldMapScene.component;w.settingWindow.active=false;w.switchWM(System.get('chunks:///_virtual/PlayerProperties.ts').WorldMapSceneDisplayEnum.chooser);});
+   await page.waitForFunction(()=>{const c=System.get('chunks:///_virtual/WorldMapChooser.ts')?.WorldMapChooser;return c&&window.__GE_TEST_CC__.director.getScene().getComponentsInChildren(c).some(x=>x.node.activeInHierarchy);},{},{timeout:30000});
+   await page.evaluate(()=>{const c=System.get('chunks:///_virtual/WorldMapChooser.ts').WorldMapChooser;const w=window.__GE_TEST_CC__.director.getScene().getComponentsInChildren(c).find(x=>x.node.activeInHierarchy);w.moveTo(0);});
+   await page.waitForTimeout(300);
+   await gesture(Array.from({length:10},(_,i)=>[[900-i*20,620]]));
+   const index=await page.evaluate(()=>{const c=System.get('chunks:///_virtual/WorldMapChooser.ts').WorldMapChooser;return window.__GE_TEST_CC__.director.getScene().getComponentsInChildren(c).find(x=>x.node.activeInHierarchy).currentI;});
+   check('Actual world chooser one finger swipe advances once',index===1,{index});
+  }catch(e){check('Actual world chooser one finger swipe advances once',false,{failure:String(e)});}
   await page.evaluate(()=>{const a=System.get('chunks:///_virtual/PlayerProperties.ts').AllPlayerProperties;a.getTutorialProps().zengarden_intro=true;});
   await scene('zenGardenScene','GoToZenGarden');
   await page.waitForFunction(()=>{const cc=window.__GE_TEST_CC__,g=System.get('chunks:///_virtual/zenGardenScene.ts')?.zenGardenScene?.component;return g?.currentZen?.initialized&&g.shovelUI?.node?.hasEventListener(cc.Node.EventType.MOUSE_DOWN);},{},{timeout:90000});

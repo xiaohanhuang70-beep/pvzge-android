@@ -26,12 +26,12 @@
  function module(name){try{return window.System?.get?.('chunks:///_virtual/'+name+'.ts');}catch(_){return null;}}
  function active(node){for(let n=node;n;n=n.parent)if(n.active===false||n.activeInHierarchy===false)return false;return true;}
  function components(node){return node.components||node._components||node.getComponents?.(cc.Component)||[];}
- function findSetting(scene){
+ function findComponent(scene,pattern){
   const nodes=[scene];let count=0;
   while(nodes.length&&count++<4000){const node=nodes.shift();if(!node||!active(node))continue;
    for(const comp of components(node)){
     const name=cc?.js?.getClassName?.(comp)||comp.constructor?.name||'';
-    if(comp.enabled!==false&&/^SettingWindow$/i.test(name))return comp;
+    if(comp.enabled!==false&&pattern.test(name))return comp;
    }
    if(node.children)nodes.push(...node.children);
   }
@@ -40,8 +40,9 @@
  function mode(){
   connect();const scene=cc?.director?.getScene?.(),name=String(scene?.name||'');
   // Overlays take precedence even when paused over an inGameScene.
-  const settings=scene&&findSetting(scene);
+  const settings=scene&&findComponent(scene,/^SettingWindow$/i);
   if(settings)return {kind:'settings',scene,name,nativeScroll:!!settings.scrollView&&settings.scrollView.enabled!==false};
+  if(/^worldMapScene$/i.test(name)&&findComponent(scene,/^WorldMapChooser$/i))return {kind:'chooser',scene,name};
   return {kind:/^inGameScene$/i.test(name)?'battle':/^zenGardenScene$/i.test(name)?'garden':'other',scene,name};
  }
  function sameScene(s){const now=mode();return s.scene===now.scene&&s.name===now.name&&s.kind===now.kind;}
@@ -104,19 +105,28 @@
    if(s.kind==='battle'){
     later(()=>{if(sameScene(s))mouse('mousemove',p);});
     later(async token=>{if(!sameScene(s))return;s.before=engine();held=true;heldPoint=p;mouse('mousedown',p,0,1);s.selected=await inspect(s.before,s,token);},true);
-   }else if(s.kind==='garden')mouse('mousemove',p);
+   }else if(s.kind!=='settings')mouse('mousemove',p);
    return;
   }
   if(!primary)return;
   const s=primary,p=changed(e,s.id);if(!p)return;
   if(!sameScene(s)){abort();return;}
   const prev=s.last;s.last=p;s.moved=s.moved||distance(s.first,p)>=12;
+  if(s.consumeNative)e.stopPropagation?.();
   if(type==='touchmove'){
-   if(s.kind==='settings'){
-    // Cocos ScrollView owns its native drag/cancelInnerEvents. Do not scroll twice.
-    if(!s.nativeScroll&&s.moved)wheel(p,0,(prev.y-p.y)*2);
+   if(s.kind==='chooser'&&Math.abs(p.x-s.first.x)>=24){
+    if(!s.consumeNative){cancelNative(e.touches);s.consumeNative=true;}
+    e.stopPropagation?.();mouse('mousemove',p);
+   }else if(s.kind==='settings'){
+    // In the shipped settings, native drag did not change ScrollView offset.
+    // Once vertical intent is clear, cancel native UI press before wheel fallback.
+    const dy=p.y-s.first.y,dx=p.x-s.first.x;
+    if(s.scrolling||(Math.abs(dy)>=12&&Math.abs(dy)>Math.abs(dx)*1.2)){
+     if(!s.scrolling){cancelNative(e.touches);s.scrolling=true;s.consumeNative=true;}
+     e.stopPropagation?.();wheel(p,0,(prev.y-p.y)*2);
+    }
    }else if(s.kind==='battle')later(()=>{if(sameScene(s)){heldPoint=p;mouse('mousemove',p,0,held?1:0);}});
-   else if(s.kind==='garden')mouse('mousemove',p);
+   else mouse('mousemove',p);
    return;
   }
   if(type==='touchend'){
@@ -132,6 +142,9 @@
       if(token===generation){mouse('mouseup',p);held=false;heldPoint=null;}
      }
     },true);
+   }else if(s.kind==='chooser'&&s.consumeNative){
+    // WorldMapChooser listens only to wheel and changes one world per event.
+    wheel(p,0,-Math.sign(p.x-s.first.x)*120);
    }else if(s.kind!=='settings'&&!s.moved){
     later(()=>{if(sameScene(s))mouse('mousemove',p);});
     later(()=>{if(sameScene(s)){held=true;heldPoint=p;mouse('mousedown',p,0,1);}},true);

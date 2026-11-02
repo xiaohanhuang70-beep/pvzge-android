@@ -4,10 +4,10 @@ const {env,one,tap,mouse}=require('./test-env.cjs');
 test('active settings inside battle takes priority, including real Node _components',async()=>{
  const s=env('inGameScene',{settings:true,nativeScroll:true});await s.flush();tap(s);await s.flush();assert.equal(mouse(s).length,0);
 });
-test('native ScrollView single drag does not also receive a wheel scroll',async()=>{
+test('settings swipe cancels native button stream and uses one wheel route',async()=>{
  const s=env('worldMapScene',{settings:true,nativeScroll:true});await s.flush();
  s.fire('touchstart',one());s.fire('touchmove',one(50,110));s.fire('touchend',[],one(50,110));await s.flush();
- assert.equal(s.log.length,0);assert.equal(s.stops(),0);
+ assert.equal(mouse(s).length,0);assert.equal(s.log.filter(e=>e.type==='wheel').length,1);assert.equal(s.log.filter(e=>e.type==='touchcancel').length,1);assert.ok(s.stops()>0);
 });
 test('garden waits for actual hover update before plant slot press',async()=>{
  const s=env('zenGardenScene');await s.flush();tap(s);assert.equal(mouse(s).filter(e=>e.type==='mousedown').length,0);
@@ -47,4 +47,12 @@ test('physical mouse remains usable but browser touch-generated duplicate is sup
  const s=env();await s.flush();let prevented=0,stopped=0;
  for(const touch of [false,true]){const e={sourceCapabilities:{firesTouchEvents:touch},preventDefault(){prevented++;},stopImmediatePropagation(){stopped++;}};(s.events.mousedown||[]).forEach(f=>f(e));}
  assert.equal(prevented,1);assert.equal(stopped,1);
+});
+
+test('world chooser horizontal swipe switches once and cancels native end activation',async()=>{
+ const s=env('worldMapScene',{chooser:true});await s.flush();s.fire('touchstart',one(300,200));s.fire('touchmove',one(260,200));s.fire('touchmove',one(170,200));s.fire('touchend',[],one(170,200));await s.flush();
+ assert.equal(s.log.filter(e=>e.type==='wheel').length,1);assert.equal(s.log.find(e=>e.type==='wheel').deltaY,120);assert.ok(s.log.some(e=>e.type==='touchcancel'));assert.equal(mouse(s).filter(e=>e.type==='mousedown').length,0);
+});
+test('desktop-only menu hover receives position without a premature press',async()=>{
+ const s=env('StoreScene');await s.flush();s.fire('touchstart',one(100,90));s.fire('touchmove',one(140,90));assert.deepEqual(mouse(s).map(e=>[e.type,e.clientX]),[['mousemove',100],['mousemove',140]]);
 });
