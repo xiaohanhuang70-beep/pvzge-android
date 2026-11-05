@@ -27,11 +27,20 @@ module.exports=async function(page,out){
     let shot;
     try{plant.specialSniperPlantTrigger(S.getLnC(row,col));if(!flightPromise)throw Error('Real plant did not launch');shot=await flightPromise;}finally{P.throwOneBananaOnNode=launch;}
     const flight={height:shot.height,verticalVelocity:shot.bodyLinearVelocity,marker:shot.__geRange3x3,cooldown:plant.coolingdown,splashes:shot.splashDamages.map(s=>({damage:s.splashDamage,width:s.splashRange.width,height:s.splashRange.height,chill:s.chillDuration,freeze:s.freezeDuration}))};
+    // The level is still in seed-selection mode. Its real bodyRecReal getter
+    // intentionally hides every collider until gameStarted; activate this
+    // disposable fixture through the original state setter, then let the real
+    // objects calculate their own colliders and lane registration.
+    const level=System.get('chunks:///_virtual/levelController.ts').LevelPlay;
+    level.gameStarted=true;
+    for(const {z} of actors){z.bodyRecHiddenCD=0;z.judgeInLnC();z.setBodyRec();}
+    shot.judgeInLnC();
+    const collision={gameStarted:level.gameStarted,lane:shot.lIndex,column:shot.cIndex,pools:S.getAllLane().map(l=>l.zombiePool().length),target:{x:shot.worldPositionX,y:shot.worldPositionY},boardFirst:S.getSquareWorldPosition(0,0),boardLast:S.getSquareWorldPosition(4,8)};
     // Actual floor collision entry point, not a substitute damage algorithm.
     shot.height=0;shot.hitFloor(0);
     const damageResult=actors.map(({r,c,z})=>({r,c,health:z.health,hits:z.__rangeHits.slice(),chill:z.chill,freeze:z.freeze,inside:Math.abs(r-row)<=1&&Math.abs(c-col)<=1}));
     actors.forEach(({z})=>z.node.destroy());plant.node.destroy();
-    return {alias,row,col,flight,actors:damageResult};
+    return {alias,row,col,flight,collision,actors:damageResult};
    },{alias,row,col});
    result.passed=result.flight.marker===true&&result.flight.height===1000&&result.flight.verticalVelocity===-12&&result.actors.every(z=>z.health===(z.inside?8800:10000)&&JSON.stringify(z.hits)===JSON.stringify(z.inside?[1200]:[])&&(alias!=='missiletoe'||(z.inside?z.freeze>=4.9&&z.chill>=4.9:z.freeze===0&&z.chill===0)));
    report.checks.push(result);console.log('RANGE_RUNTIME_CHECK',JSON.stringify(result));
