@@ -1,29 +1,189 @@
-name: GE v053 range3x3 resource inspection
-'on':
-  workflow_dispatch: null
+name: GE v053 Touch + Plants 3x3 TEST APK
 permissions:
   contents: read
 jobs:
-  inspect:
+  android-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-    - uses: actions/checkout@v4
-    - name: Recover pinned original APK and inspect exact plant assets
-      run: "set -euo pipefail\ncurl --fail --location --retry 3 --output /tmp/ge-original.apk\
+    - name: Checkout personal fork (read-only for build)
+      uses: actions/checkout@v4
+    - name: Preserve v0.5.3 source patch and restore original wrapper
+      shell: bash
+      run: 'set -euo pipefail
+
+        mkdir -p /tmp/ge-v053
+
+        cp v053/* /tmp/ge-v053/
+
+        mkdir -p /tmp/ge-range
+
+        cp range3x3/* /tmp/ge-range/
+
+        git fetch --depth 1 https://github.com/MrPurple666/pvzge-android.git refs/tags/v0.16.1
+
+        git checkout --detach FETCH_HEAD
+
+        mkdir -p v053-results
+
+        '
+    - name: Test cross-scene adapter and existing wrapper regressions
+      shell: bash
+      run: 'set -euo pipefail
+
+        node --check /tmp/ge-v053/ge-mobile-input.js
+
+        python3 -m py_compile /tmp/ge-v053/*.py
+
+        node --test /tmp/ge-v053/test-all-screens.cjs /tmp/ge-v053/test-regressions.cjs
+        | tee v053-results/adapter-tests.log
+
+        node --test tests/*.test.cjs | tee v053-results/upstream-tests.log
+
+        '
+    - name: Setup Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - name: Install Android SDK 35
+      shell: bash
+      run: 'set -euo pipefail
+
+        export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+
+        "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35"
+        "build-tools;35.0.0"
+
+        '
+    - name: Apply v0.5.3 native touch/fullscreen patch
+      run: 'set -euo pipefail
+
+        python3 /tmp/ge-v053/apply_v053.py .
+
+        python3 /tmp/ge-range/identity.py .
+
+        git diff -- app > v053-results/android-wrapper.patch
+
+        java -m jdk.compiler/com.sun.tools.javac.Main --release 11 -d /tmp/ge-java-tests
+        app/src/main/java/com/pvzge/gardendless/RenderSize.java tests/RenderSizeTest.java
+        app/src/main/java/com/pvzge/gardendless/UpdateVersion.java tests/UpdateVersionTest.java
+
+        java -cp /tmp/ge-java-tests com.pvzge.gardendless.RenderSizeTest
+
+        java -cp /tmp/ge-java-tests com.pvzge.gardendless.UpdateVersionTest
+
+        '
+    - name: Recover exact original game resources with SHA256 verification
+      shell: bash
+      run: "# Reuse the exact upstream v0.16.1 bundle while its source repository\
+        \ is unavailable.\ncurl --fail --location --retry 3 --output /tmp/ge-original.apk\
         \ https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.1/app-release.apk\n\
         echo \"d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35  /tmp/ge-original.apk\"\
-        \ | sha256sum --check\npython3 - <<'PYASSETS'\nimport zipfile, shutil, json,\
-        \ hashlib\nfrom pathlib import Path\nPath('range-results').mkdir()\nwith zipfile.ZipFile('/tmp/ge-original.apk')\
-        \ as apk:\n with apk.open('assets/pvzge_web.zip') as s,open('/tmp/game.zip','wb')\
-        \ as d: shutil.copyfileobj(s,d)\nwith zipfile.ZipFile('/tmp/game.zip') as\
-        \ z:\n matches=[]\n for name in z.namelist():\n  if not name.endswith('.json'):\
-        \ continue\n  data=z.read(name)\n  if any(k in data.lower() for k in [b'missiletoe',b'bananalauncher',b'banana@']):\n\
-        \   target=Path('range-results')/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)\n\
-        \   matches.append({'path':name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})\n\
-        \ print(json.dumps(matches,indent=2))\n Path('range-results/matches.json').write_text(json.dumps(matches,indent=2))\n\
-        PYASSETS\n"
-    - uses: actions/upload-artifact@v4
+        \ | sha256sum --check\npython3 - <<'PYASSETS'\nfrom pathlib import Path\n\
+        import shutil, zipfile\ntarget = Path(\"app/src/main/assets/pvzge_web.zip\"\
+        )\ntarget.parent.mkdir(parents=True, exist_ok=True)\nwith zipfile.ZipFile(\"\
+        /tmp/ge-original.apk\") as apk:\n    with apk.open(\"assets/pvzge_web.zip\"\
+        ) as source, target.open(\"wb\") as dest:\n        shutil.copyfileobj(source,\
+        \ dest)\nwith zipfile.ZipFile(target) as bundle:\n    names = bundle.namelist()\n\
+        \    assert \"index.html\" in names, \"Game entry point missing\"\n    assert\
+        \ any(name.startswith(\"assets/\") for name in names), \"Game resources missing\"\
+        \n    print(f\"Recovered original v0.16.1 game bundle: {target.stat().st_size}\
+        \ bytes, {len(names)} entries\")\nPYASSETS\nrm /tmp/ge-original.apk\n"
+    - name: Patch exact target ranges and execute actual damage regressions
+      run: 'set -euo pipefail
+
+        python3 /tmp/ge-range/apply_range.py app/src/main/assets/pvzge_web.zip v053-results
+
+        GE_BASE_ROOT=v053-results/original python3 /tmp/ge-range/test_patch.py 2>&1
+        | tee v053-results/patch-tests.log
+
+        GE_GAME_MAIN=v053-results/patched/assets/main/index.js GE_RESOURCE_ROOT=v053-results/patched
+        node --test /tmp/ge-range/test-range.cjs | tee v053-results/range-tests.log
+
+        node --check v053-results/patched/assets/main/index.js
+
+        '
+    - name: Audit actual game inputs and execute shipped handler contracts
+      run: 'set -euo pipefail
+
+        python3 /tmp/ge-v053/inspect-game.py | tee v053-results/input-audit.log
+
+        GE_GAME_MAIN=v053-results/game-main.js node --test /tmp/ge-v053/test-game-contracts.cjs
+        | tee v053-results/game-contract-tests.log
+
+        '
+    - name: Run actual bundled Cocos touch smoke in Chromium
+      id: runtime
+      continue-on-error: true
+      timeout-minutes: 8
+      run: 'set -euo pipefail
+
+        python3 - <<''PYGAME''
+
+        import zipfile
+
+        with zipfile.ZipFile(''app/src/main/assets/pvzge_web.zip'') as z: z.extractall(''/tmp/ge-runtime'')
+
+        PYGAME
+
+        npm install --prefix /tmp/ge-v053 playwright@1.56.1
+
+        /tmp/ge-v053/node_modules/.bin/playwright install --with-deps chromium
+
+        python3 /tmp/ge-range/prepare_runtime.py
+
+        node /tmp/ge-v053/runtime-smoke.cjs | tee v053-results/runtime.log
+
+        '
+    - name: Build isolated debug APK
+      shell: bash
+      run: 'set -euo pipefail
+
+        chmod +x ./gradlew
+
+        ./gradlew :app:assembleDebug -x createGameZip --no-daemon --stacktrace
+
+        test -s app/build/outputs/apk/debug/app-debug.apk
+
+        unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F ''assets/ge-mobile-input.js''
+
+        unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -F ''assets/pvzge_web.zip''
+
+        '
+    - name: Verify APK signature and independent identity
+      run: 'set -euo pipefail
+
+        APK=app/build/outputs/apk/debug/app-debug.apk
+
+        "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$APK" | tee
+        v053-results/apk-signature.log
+
+        "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" > v053-results/apk-badging.log
+
+        grep -F "package: name=''com.pvzge.gardendless.nativev053range3x3''" v053-results/apk-badging.log
+
+        sha256sum "$APK" | tee v053-results/APK-SHA256.txt
+
+
+        python3 /tmp/ge-range/verify_apk.py "$APK" v053-results /tmp/ge-v053/ge-mobile-input.js
+
+        '
+    - name: Upload experimental APK
+      uses: actions/upload-artifact@v4
       with:
-        name: GE-range3x3-original-configs
-        path: range-results/
+        name: GE-v053-Range3x3-Full-APK
+        path: app/build/outputs/apk/debug/app-debug.apk
+        if-no-files-found: error
+        compression-level: 0
         retention-days: 14
+    - name: Upload verification evidence (including any runtime failure)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: GE-v053-Range3x3-Verification
+        path: v053-results/
+        if-no-files-found: warn
+        retention-days: 14
+'on':
+  workflow_dispatch: null
