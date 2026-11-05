@@ -136,6 +136,23 @@ jobs:
         node /tmp/ge-v053/runtime-smoke.cjs | tee v053-results/runtime.log
 
         '
+    - name: Require actual plant range runtime checks (known world swipe stays separate)
+      run: 'python3 - <<''PYRANGE''
+
+        import json
+
+        r=json.load(open(''v053-results/range-runtime-report.json''))
+
+        assert r.get(''completed'') and r.get(''passed'') and len(r[''checks''])==4
+        and all(c[''passed''] for c in r[''checks'']), ''Core plant range runtime
+        checks failed; inspect range-runtime-report.json''
+
+        print(''PASS: actual bundled Cocos plant launch/impact checks; known world
+        chooser swipe remains separately reported'')
+
+        PYRANGE
+
+        '
     - name: Build isolated debug APK
       shell: bash
       run: 'set -euo pipefail
