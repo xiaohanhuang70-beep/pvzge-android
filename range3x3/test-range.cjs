@@ -14,7 +14,8 @@ function run(alias,row=2,col=4,duplicate=false){
  const lanes=Array.from({length:5},(_,r)=>({LaneIndex:r,midY:500-r*SH,zombiePool(){return enemies.filter(e=>e.r===r||duplicate&&e===wide);},hypnoZombiePool(){return[];},tombPool(){return[];}}));
  const square={SquareWidth:SW,SquareHeight:SH,MaxLaneIndex:4,MaxColumnIndex:8,getAllLane:()=>lanes,getSquareWorldPosition:(r,c)=>new Vec(300+c*SW,500-r*SH)};
  const shot={__geRange3x3:true,worldPositionX:300+col*SW,inLane:lanes[row],lIndex:row,objdataOwn:{IgnoreTombstones:false},damageScale:1,havePeaBuff:false,damage:1200,killedZombiesOneHit:[],dealsSplashToPlants:()=>false,onDamageOnZombie(){}};
- const ctx={z:Rectangle,y:Vec,I:square,E:Damage,O:{fire:1},B:{Zomboss:99}};
+ // v0.16.6 commonShot bindings: O=Rectangle, F=Square, E=ZombieDamageDetails, z=ZombieDamageType.
+ const ctx={O:Rectangle,y:Vec,F:square,E:Damage,z:{fire:1},W:{kongfu_TNT:99}};
  shot.dealDamageToZombie=fn('commonShot','h.dealDamageToZombie=',ctx);
  shot.dealSplashDamageForEach=fn('commonShot','h.dealSplashDamageForEach=',ctx);
  shot.splashDamages=props.find(p=>p.aliases.includes(alias)).objdata.SplashDamage.map(p=>SplashDamage.fromPP(p));

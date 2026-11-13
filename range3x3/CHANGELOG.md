@@ -17,9 +17,9 @@
 
 ## Android 与构建
 
-- `range3x3/identity.py` 在原 `apply_v053.py` 后只修改测试包后缀和名称：`com.pvzge.gardendless.nativev053range3x3` / `GE 触控 v0.5.3 范围3x3测试`。
+- `range3x3/identity.py` 在原 `apply_v053.py` 后只修改测试包后缀和名称：`com.pvzge.gardendless.test0166` / `GE v0.16.6 触控范围3x3测试`。
 - `.github/workflows/ge-fullscreen-touch.yml` 只在新分支更新，保留旧 v053 的资源恢复、测试、画质和构建方式，叠加范围补丁、伤害测试和 APK 全资源 SHA256 核验。
-- 原始下载地址仍为作者 `v0.16.1/app-release.apk`；原始 APK SHA256 `d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35`。
+- 游戏资源改为作者 `v0.16.6/app-release.apk`；SHA256 `1d2dfeb835be404d39dd80835a5b5c0fc332e5a22efcf14b28209326667849ed`。`assets/main/index.js` 在 v0.16.6 重新压缩，`commonShot.dealSplashDamageForEach` 的棋盘变量从 `I`/`z`/`l` 改为 `F`/`O`/`r`。香蕉发射锚点未变。弹体、图鉴、植物和类型 JSON 的 SHA256 与 v0.16.1 相同。
 - `v053/ge-mobile-input.js`、`v053/apply_v053.py`、原回归与运行测试文件保持仓库字节不变。仅在临时 CI 目录复制并扩展运行测试入口，不会写回旧脚本。
 - 所有资源文件逐项生成 SHA256 清单；APK 打包后重新读取内嵌资源逐项比对。保留全部离线游戏资源。
 - 这是独立 debug 测试 APK；不会替换原 v053 的应用身份，数据目录独立。没有接触用户手机或现有存档。若需要旧进度，使用原版本导出和测试版导入；该增量未重写存档功能。

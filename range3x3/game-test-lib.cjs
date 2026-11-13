@@ -10,7 +10,7 @@ function makeLibrary(source){
  const Rectangle=fn('CharacterManager','t("Rectangle",',{h:Vec,D})();
  class Damage{constructor(damage){this.damage=damage;}}
  class Poison{constructor(DPS=0,duration=0){this.DPS=DPS;this.duration=duration;}isValid(){return this.DPS>0&&this.duration>0;}}
- const SplashDamage=fn('commonShot','ve=e("SplashDamage",',{d:Size,R:Poison})();
+ const SplashDamage=fn('commonShot','De=e("SplashDamage",',{d:Size,R:Poison})();
  return {chunk,fn,Rectangle,Vec,Size,Damage,Poison,SplashDamage};
 }
 function objects(tree,result=[]){if(tree&&typeof tree==='object'){if(tree.objclass&&tree.aliases)result.push(tree);Object.values(tree).forEach(x=>objects(x,result));}return result;}

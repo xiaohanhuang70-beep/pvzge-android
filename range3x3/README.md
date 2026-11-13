@@ -8,16 +8,18 @@
 - 槲寄冰仙子原有的 3×3 冰冻、减速层完全保留。
 - 原版碰撞框判定、敌人对象去重、瞄准、飞行、动画、费用、种植冷却和发射休息时间保持原路径。目标弹体范围与地图边界求交。
 - 两株植物图鉴中英文范围同步为 3×3。
-- 独立包名 `com.pvzge.gardendless.nativev053range3x3`，应用名称 `GE 触控 v0.5.3 范围3x3测试`。原应用及存档不受覆盖；新包使用独立数据目录。
+- 独立包名 `com.pvzge.gardendless.test0166`，应用名称 `GE v0.16.6 触控范围3x3测试`。原应用及存档不受覆盖；新包使用独立数据目录。
 - `v053/` 中的触控实现与原测试文件不变，不重写 `ge-mobile-input.js`。旧的世界选择器单指横滑问题按原范围记录。
 
 [具体修改记录](CHANGELOG.md) · [逐项测试报告和 APK 下载](TEST_REPORT.md)
 
 ## 可重复构建与严格校验
 
-手动调度 `.github/workflows/ge-fullscreen-touch.yml`，选择本测试分支。工作流继续使用原作者 v0.16.1 发布 APK 和 v053 的固定 SHA256 校验流程，恢复完整游戏资源后运行 `apply_range.py`。原始 APK 或五个关键游戏资源的指纹、函数锚点、JSON 对象类别和属性有任何不匹配都会停止。补丁只对全新恢复的资源执行，拒绝对已补丁资源重复叠加。
+手动调度 `.github/workflows/ge-fullscreen-touch.yml`，选择本测试分支。工作流从原作者 `v0.16.6` 发布 APK 恢复游戏资源，并核对 SHA256，然后运行 `apply_range.py`。Android 包装标签 `v0.16.6` 与 `v0.16.1` 指向同一提交；变化在网页资源。原始 APK 或五个关键游戏资源的指纹、函数锚点、JSON 对象类别和属性有任何不匹配都会停止。补丁只对全新恢复的资源执行，拒绝对已补丁资源重复叠加。
 
-原始 APK SHA256：`d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35`。
+原始 APK：`https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.6/app-release.apk`
+
+原始 APK SHA256：`1d2dfeb835be404d39dd80835a5b5c0fc332e5a22efcf14b28209326667849ed`。
 
 补丁过程记录三项变更资源和其余资源 SHA256，打包后重新核对 APK 中全部游戏资源与原 v053 触控脚本字节。输出完整离线 debug APK、签名验证、资源清单、自动化日志和实际 Cocos 运行报告。
 
