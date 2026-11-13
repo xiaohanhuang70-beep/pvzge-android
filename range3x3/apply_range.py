@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed incremental patch for the pinned GE v0.16.1 bundle only."""
+"""Fail-closed incremental patch for the pinned GE v0.16.6 bundle only."""
 import copy, hashlib, json, os, shutil, sys, zipfile
 from pathlib import Path
 MAIN='assets/main/index.js'
@@ -7,7 +7,10 @@ PROPS='assets/resources/import/e8/e8720a22-e52e-45f4-a860-df34a0f1c62e.json'
 ALMANAC='assets/resources/import/79/7900744c-0325-4680-a641-811617384636.json'
 PLANTS='assets/resources/import/07/076885ea-a5d2-4501-bd14-7c3f00e110c5.json'
 TYPES='assets/resources/import/43/43ce6243-1dd7-4a2e-9f3a-576c4f4fa614.json'
-HASHES={MAIN:'f48e550d7a7f0845651e59e7d2dbe3d7ccc0eefbd326fdf742c5709fcdfc8e22',PROPS:'d656b8f20d9dbc8263ced607adf23d1fa10ed5d0a123d3b53f98ae610fd5d65a',ALMANAC:'9b9196a96b4b292f667d56d7d0521cc270bcada15b1e862c5f81c725e1c5c886',PLANTS:'b9075eb8c76b19cfaebd3f0c43c8226db7b18745850e2b38e4737d40a5e422f6',TYPES:'9054b4489445abd0a5d6bf9489569a6e65d2377d5d3bd9975f10b11e63d21c15'}
+# v0.16.6 app-release.apk. Projectile/almanac/plant/type JSON hashes match v0.16.1;
+# assets/main/index.js was re-minified and is the only fingerprint that moved.
+ORIGINAL_APK_SHA256='1d2dfeb835be404d39dd80835a5b5c0fc332e5a22efcf14b28209326667849ed'
+HASHES={MAIN:'b5f3a24126c7753d2cb510bc625df8bf6f1cfe7aa5309a228e75127bf9e6c9d8',PROPS:'d656b8f20d9dbc8263ced607adf23d1fa10ed5d0a123d3b53f98ae610fd5d65a',ALMANAC:'9b9196a96b4b292f667d56d7d0521cc270bcada15b1e862c5f81c725e1c5c886',PLANTS:'b9075eb8c76b19cfaebd3f0c43c8226db7b18745850e2b38e4737d40a5e422f6',TYPES:'9054b4489445abd0a5d6bf9489569a6e65d2377d5d3bd9975f10b11e63d21c15'}
 TARGETS={'banana':1200,'banana1':2200,'banana2':3200,'missiletoe':1200,'missiletoe1':2200,'missiletoe2':3200}
 def sha(data):return hashlib.sha256(data).hexdigest()
 def require(ok,msg):
@@ -29,10 +32,12 @@ def patch_main(data):
  changed=replace_once(chunk,anchor,'(_=e.sent).__geRange3x3=/^(banana|missiletoe)[12]?$/.test(o),_.worldPosition=new c(t.x,t.y),_.height=a,p=0','PrjFunctions.throwOneBananaOnPos')
  s=s[:start]+changed+s[end:]
  start=s.index('System.register("chunks:///_virtual/commonShot.ts"');end=s.index('System.register(',start+20);chunk=s[start:end]
- anchor='e.splashRange.height*I.SquareHeight),r=[],h=[],c=[];I.getAllLane()'
+ # v0.16.6 rebinds this function: rectangle is r via O.createRectangleCenter,
+ # lane arrays start at l, and the board helper is F (Square), not I.
+ anchor='e.splashRange.height*F.SquareHeight),l=[],h=[],c=[];F.getAllLane()'
  # Only these projectiles are clipped. Existing object de-duplication and all
  # damage/effect callbacks below remain byte-identical.
- new='''e.splashRange.height*I.SquareHeight),r=[],h=[],c=[];if(this.__geRange3x3){var geFirst=I.getSquareWorldPosition(0,0),geLast=I.getSquareWorldPosition(I.MaxLaneIndex,I.MaxColumnIndex),geLeft=Math.max(this.worldPositionX-e.splashRange.width*I.SquareWidth/2,geFirst.x-I.SquareWidth/2),geRight=Math.min(this.worldPositionX+e.splashRange.width*I.SquareWidth/2,geLast.x+I.SquareWidth/2),geBottom=Math.max(this.inLane.midY-e.splashRange.height*I.SquareHeight/2,geLast.y-I.SquareHeight/2),geTop=Math.min(this.inLane.midY+e.splashRange.height*I.SquareHeight/2,geFirst.y+I.SquareHeight/2);if(geRight<=geLeft||geTop<=geBottom)return;l=z.createRectangleCenter(new y((geLeft+geRight)/2,(geBottom+geTop)/2),geRight-geLeft,geTop-geBottom)}I.getAllLane()'''
+ new='''e.splashRange.height*F.SquareHeight),l=[],h=[],c=[];if(this.__geRange3x3){var geFirst=F.getSquareWorldPosition(0,0),geLast=F.getSquareWorldPosition(F.MaxLaneIndex,F.MaxColumnIndex),geLeft=Math.max(this.worldPositionX-e.splashRange.width*F.SquareWidth/2,geFirst.x-F.SquareWidth/2),geRight=Math.min(this.worldPositionX+e.splashRange.width*F.SquareWidth/2,geLast.x+F.SquareWidth/2),geBottom=Math.max(this.inLane.midY-e.splashRange.height*F.SquareHeight/2,geLast.y-F.SquareHeight/2),geTop=Math.min(this.inLane.midY+e.splashRange.height*F.SquareHeight/2,geFirst.y+F.SquareHeight/2);if(geRight<=geLeft||geTop<=geBottom)return;r=O.createRectangleCenter(new y((geLeft+geRight)/2,(geBottom+geTop)/2),geRight-geLeft,geTop-geBottom)}F.getAllLane()'''
  chunk=replace_once(chunk,anchor,new,'commonShot.dealSplashDamageForEach')
  return (s[:start]+chunk+s[end:]).encode()
 def plan(data):
@@ -61,7 +66,7 @@ def apply(bundle,out):
   data={name:z.read(name) for name in HASHES};patched=plan(data)
   for name,value in data.items():
    path=out/'original'/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(value)
-  report={'base_commit':'14cadfb2835da199deedb771c5b51e00aaa36d4d','original_apk_sha256':'d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35','changed':{name:{'before':sha(data[name]),'after':sha(value)} for name,value in patched.items()},'entry_count':len(names),'unchanged_entries_verified':0}
+  report={'base_commit':'57086999f3d7a946ad6978cd6e2230b837ee4310','game_resources':'v0.16.6','original_apk_sha256':ORIGINAL_APK_SHA256,'changed':{name:{'before':sha(data[name]),'after':sha(value)} for name,value in patched.items()},'entry_count':len(names),'unchanged_entries_verified':0}
   temp=bundle.with_suffix('.range.tmp');manifest={}
   try:
    with zipfile.ZipFile(temp,'w') as dest:

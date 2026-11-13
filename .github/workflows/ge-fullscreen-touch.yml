@@ -1,4 +1,4 @@
-name: GE v053 Touch + Plants 3x3 TEST APK
+name: GE v0.16.6 Touch + Plants 3x3 TEST APK
 permissions:
   contents: read
 jobs:
@@ -20,7 +20,7 @@ jobs:
 
         cp range3x3/* /tmp/ge-range/
 
-        git fetch --depth 1 https://github.com/MrPurple666/pvzge-android.git refs/tags/v0.16.1
+        git fetch --depth 1 https://github.com/MrPurple666/pvzge-android.git refs/tags/v0.16.6
 
         git checkout --detach FETCH_HEAD
 
@@ -76,10 +76,11 @@ jobs:
         '
     - name: Recover exact original game resources with SHA256 verification
       shell: bash
-      run: "# Reuse the exact upstream v0.16.1 bundle while its source repository\
-        \ is unavailable.\ncurl --fail --location --retry 3 --output /tmp/ge-original.apk\
-        \ https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.1/app-release.apk\n\
-        echo \"d1ce5072ff036884d4333f5bf0988e8e533a9d9c9710330a467329521e4f8b35  /tmp/ge-original.apk\"\
+      run: "# Restore game resources from the published v0.16.6 APK. The Android\
+        \ tag and v0.16.1 share one wrapper commit; the release asset carries the\
+        \ newer web bundle.\ncurl --fail --location --retry 3 --output /tmp/ge-original.apk\
+        \ https://github.com/MrPurple666/pvzge-android/releases/download/v0.16.6/app-release.apk\n\
+        echo \"1d2dfeb835be404d39dd80835a5b5c0fc332e5a22efcf14b28209326667849ed  /tmp/ge-original.apk\"\
         \ | sha256sum --check\npython3 - <<'PYASSETS'\nfrom pathlib import Path\n\
         import shutil, zipfile\ntarget = Path(\"app/src/main/assets/pvzge_web.zip\"\
         )\ntarget.parent.mkdir(parents=True, exist_ok=True)\nwith zipfile.ZipFile(\"\
@@ -88,7 +89,7 @@ jobs:
         \ dest)\nwith zipfile.ZipFile(target) as bundle:\n    names = bundle.namelist()\n\
         \    assert \"index.html\" in names, \"Game entry point missing\"\n    assert\
         \ any(name.startswith(\"assets/\") for name in names), \"Game resources missing\"\
-        \n    print(f\"Recovered original v0.16.1 game bundle: {target.stat().st_size}\
+        \n    print(f\"Recovered original v0.16.6 game bundle: {target.stat().st_size}\
         \ bytes, {len(names)} entries\")\nPYASSETS\nrm /tmp/ge-original.apk\n"
     - name: Patch exact target ranges and execute actual damage regressions
       run: 'set -euo pipefail
@@ -178,7 +179,7 @@ jobs:
 
         "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" > v053-results/apk-badging.log
 
-        grep -F "package: name=''com.pvzge.gardendless.nativev053range3x3''" v053-results/apk-badging.log
+        grep -F "package: name=''com.pvzge.gardendless.test0166''" v053-results/apk-badging.log
 
         sha256sum "$APK" | tee v053-results/APK-SHA256.txt
 
@@ -189,7 +190,7 @@ jobs:
     - name: Upload experimental APK
       uses: actions/upload-artifact@v4
       with:
-        name: GE-v053-Range3x3-Full-APK
+        name: GE-v0166-Touch-Range3x3-APK
         path: app/build/outputs/apk/debug/app-debug.apk
         if-no-files-found: error
         compression-level: 0
@@ -198,7 +199,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: GE-v053-Range3x3-Verification
+        name: GE-v0166-Touch-Range3x3-Verification
         path: v053-results/
         if-no-files-found: warn
         retention-days: 14

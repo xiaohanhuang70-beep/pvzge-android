@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Patch the MrPurple666/pvzge-android v0.16.1 Android wrapper.
+"""Patch the MrPurple666/pvzge-android wrapper.
+
+Tags v0.16.1 and v0.16.6 point at the same wrapper commit, so these Android
+source anchors are unchanged. Game resources are restored separately from the
+v0.16.6 release APK. Every expected anchor must match exactly once.
 
 This deliberately does not change compiled PvZ2 Gardendless game assets.
 Native Cocos touch events remain enabled; a separate ordered mouse stream is
@@ -22,7 +26,7 @@ def rep(relpath, old, new):
 webview = root / 'app/src/main/java/com/pvzge/gardendless/MouseGameWebView.kt'
 old = webview.read_text(encoding='utf-8')
 if 'class MouseGameWebView' not in old or 'injectJsMouseEvent' not in old:
-    raise SystemExit('Unexpected native mouse adapter: must be the original v0.16.1 source')
+    raise SystemExit('Unexpected native mouse adapter: must be the original v0.16.1/v0.16.6 wrapper source')
 webview.write_text('''// PvZ2 Gardendless Android v0.5.3 experimental native-touch wrapper.
 // Keeps Cocos/WebView touch events intact; ge-mobile-input.js supplies
 // an ordered, compatible mouse stream for the game lawn controls.
